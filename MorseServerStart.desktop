@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MorseServerStart
+Type=Application
+Exec=/usr/bin/python3 /home/konard/Desktop/udpMorseServer.py
+Terminal=true
+Hidden=false
+Comment=put to /home/pi/.config/autostart
+Name[en_GB]=MorseServerStart.desktop
+StartupNotify=false
