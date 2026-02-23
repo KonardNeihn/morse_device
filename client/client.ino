@@ -1,5 +1,6 @@
 /*
  * es könnten noch sachen in drucker und fenster stecken bleiben, wenn stream aufhört
+ * rickroll einabauen
  */
 
 #include <WiFi.h>
@@ -38,6 +39,7 @@ const int udp_port = 6969;                    // Port zum Senden und Empfangen
 #define SPEAKER 12
 #define BUTTON 14
 #define LED 13
+#define MOSFET 18
 #define NORMAL_MODE_PIN 27
 #define NO_SOUND_MODE_PIN 26
 #define NO_PRINTER_MODE_PIN 25
@@ -81,6 +83,7 @@ void setup() {
   pinMode(SPEAKER, OUTPUT);
   pinMode(LED, OUTPUT);
   pinMode(BUTTON, INPUT);
+  pinMode(MOSFET, OUTPUT);
   pinMode(NORMAL_MODE_PIN, INPUT);
   pinMode(NO_SOUND_MODE_PIN, INPUT);
   pinMode(NO_PRINTER_MODE_PIN, INPUT);
@@ -88,13 +91,12 @@ void setup() {
   pinMode(SERVER_CHECK_MODE_PIN, INPUT);
   pinMode(RICK_ROLL_MODE_PIN, INPUT);
 
+  //startet das laden des super-caps
+  digitalWrite(MOSFET, HIGH);
+
   //Serial.begin(115200);
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-  // Reset with ESC @
-  printer.write(27);  // ESC
-  printer.write('@'); // @
 
   udpQueue = xQueueCreate(32, sizeof(UdpPacket));
   sortQueue = xQueueCreate(32, sizeof(UdpPacket));
@@ -121,15 +123,24 @@ void loop() {
   vTaskDelay(portMAX_DELAY);  // legt den loop task still
 }
 
+/*
+ * ingesamt werden alle pins jede Sekunde aktualisiert 
+ * und in globalen variablen für die anderen Tasks gespeichert
+ * dazwischen wird kurz der MOSFET ausgeschaltet, damit der esp32 bei rückfluss einfach ausgeht
+ */
 void CheckerTask(void *pvParameters) {
   while (true) {
+    digitalWrite(MOSFET, HIGH);
     NO_SOUND_MODE = (digitalRead(NO_SOUND_MODE_PIN) == LOW);
     NO_PRINTER_MODE = (digitalRead(NO_PRINTER_MODE_PIN) == LOW);
     SELF_CHECK_MODE = (digitalRead(SELF_CHECK_MODE_PIN) == LOW);
     SERVER_CHECK_MODE = (digitalRead(SERVER_CHECK_MODE_PIN) == LOW);
     RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
     checkWiFi();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(800 / portTICK_PERIOD_MS);
+    digitalWrite(MOSFET, LOW);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
   }
 }
 

@@ -96,12 +96,18 @@ void playback(MorseEvent *event, bool *sound_on) {
 }
 
 void print(bool top_line[384], bool bottom_line[384]) {
+  // Reset with ESC @
+  printer.write(27);  // ESC
+  printer.write('@'); // @
+  vTaskDelay(1);
+
   // configure heating parameters ESC 7
   printer.write(27);    // ESC
   printer.write(55);    // 7
-  printer.write(4);     // n1   → heizpunkte, die gleichzeitig laufen dürfen              evtl dunkler bei größerer anzahl, das heizpunkte gemeinsam sich gegenseitig heizen
+  printer.write(1);     // n1   → heizpunkte, die gleichzeitig laufen dürfen              evtl dunkler bei größerer anzahl, das heizpunkte gemeinsam sich gegenseitig heizen
   printer.write(255);   // n2   → Länge Heizzeit (hoch -> langsam, aber dunkler)          evtl bringt 255 nicht so viel, 
-  printer.write(128);   // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
+  printer.write(255);   // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
+  vTaskDelay(1);
 
   // ESC 3 Line spacing auf 0 setzen
   //printer.write(27);
@@ -118,6 +124,7 @@ void print(bool top_line[384], bool bottom_line[384]) {
   printer.write((uint8_t)1);    // Mode 1 = 8-dot double density (384 pixel)
   printer.write((uint8_t)128);  // nL = 128 Bits
   printer.write((uint8_t)1);    // nH = 1 (1*256)    Zeilenlänge = nL + nH * 256 = 384
+  vTaskDelay(1);
 
   for(int i = 0; i < 384; i++) {
     uint8_t column = 0b00010000;  // eine Trennlinie zwischen den Zeilen
