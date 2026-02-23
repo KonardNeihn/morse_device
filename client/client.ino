@@ -8,16 +8,12 @@
 #include <HardwareSerial.h>
 
 // WLAN-Zugangsdaten
+
 const char *ssid = "WGlan";
 const char *password = "51565735623896715310";
 const char *ssid2 = "Leibniz' Hotspot";
 const char *password2 = "";
-/*
-const char *ssid = "LestMehrBuchen!";
-const char *password = "fluessigesHelium-268,8)";
-const char *ssid2 = "NichtDeins";
-const char *password2 = "oxygen2025";
-*/
+
 
 // UDP-Konfiguration
 const char *udp_address = "morse.hopto.org";  // IP des Servers
