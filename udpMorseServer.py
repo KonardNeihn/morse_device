@@ -4,8 +4,7 @@ import queue
 import time
 import struct
 import json
-import signal
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify
 
 INACTIVITY_TIMEOUT = 3600
 RECEIVE_PORT = 6969
@@ -16,9 +15,7 @@ messages = queue.Queue()
 clients = {}
 last_seq = {}
 client_stats = {}
-
 clients_lock = threading.Lock()
-shutdown_event = threading.Event()
 
 # ─────────────────────────────
 # JSON Logging
@@ -35,214 +32,125 @@ def log_event(level, event, **kwargs):
         f.write(json.dumps(entry) + "\n")
 
 # ─────────────────────────────
-# UDP Setup (Auto IP Bind)
+# Auto IP Bind
 # ─────────────────────────────
 
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server.bind(("0.0.0.0", RECEIVE_PORT))
-server.settimeout(1.0)
 
-print(f"UDP Server running on *:{RECEIVE_PORT}")
+print(f"Server running on UDP *:{RECEIVE_PORT}")
 log_event("INFO", "server_start", port=RECEIVE_PORT)
 
 # ─────────────────────────────
-# RECEIVE THREAD
-# ─────────────────────────────
 
 def receive():
-    while not shutdown_event.is_set():
-        try:
-            message, address = server.recvfrom(64)
-            now = time.time()
+    while True:
+        message, address = server.recvfrom(64)
 
-            if len(message) != PACKET_STRUCT.size:
-                continue
+        now = time.time()
 
-            messages.put((message, address, now))
-
-            with clients_lock:
-                if address not in clients:
-                    log_event("INFO", "client_registered", client=str(address))
-                    client_stats[address] = {
-                        "packets": 0,
-                        "lost": 0,
-                        "last_arrival": None,
-                        "jitter": 0,
-                        "history": []
-                    }
-
-                clients[address] = now
-
-        except socket.timeout:
+        if len(message) != PACKET_STRUCT.size:
+            log_event("WARN", "invalid_packet", client=str(address))
             continue
-        except OSError:
-            break
 
-# ─────────────────────────────
-# BROADCAST THREAD
-# ─────────────────────────────
+        messages.put((message, address, now))
+
+        with clients_lock:
+            if address not in clients:
+                log_event("INFO", "client_registered", client=str(address))
+                client_stats[address] = {
+                    "packets": 0,
+                    "lost": 0,
+                    "last_arrival": None,
+                    "jitter": 0,
+                }
+
+            clients[address] = now
+
 
 def broadcast():
-    while not shutdown_event.is_set():
-        try:
-            message, from_address, arrival_time = messages.get(timeout=1)
+    while True:
+        message, from_address, arrival_time = messages.get()
 
-            (
-                session,
-                cur_seq, cur_duration, cur_state,
-                rec_seq, rec_duration, rec_state
-            ) = PACKET_STRUCT.unpack(message)
+        (
+            session,
+            cur_seq, cur_duration, cur_state,
+            rec_seq, rec_duration, rec_state
+        ) = PACKET_STRUCT.unpack(message)
 
-            with clients_lock:
-                stats = client_stats[from_address]
-                stats["packets"] += 1
+        with clients_lock:
 
-                # Packet loss
-                if from_address in last_seq:
-                    expected = (last_seq[from_address] + 1) & 0xFF
-                    if cur_seq != expected:
-                        lost = (cur_seq - expected) & 0xFF
-                        stats["lost"] += lost
+            stats = client_stats[from_address]
+            stats["packets"] += 1
 
-                last_seq[from_address] = cur_seq
+            # ───── Packet Loss ─────
+            if from_address in last_seq:
+                expected = (last_seq[from_address] + 1) & 0xFF
+                if cur_seq != expected:
+                    lost = (cur_seq - expected) & 0xFF
+                    stats["lost"] += lost
+                    log_event("WARN", "packet_loss",
+                              client=str(from_address),
+                              lost=lost)
 
-                # Jitter
-                if stats["last_arrival"] is not None:
-                    delta = arrival_time - stats["last_arrival"]
-                    stats["jitter"] = 0.9 * stats["jitter"] + 0.1 * abs(delta)
+            last_seq[from_address] = cur_seq
 
-                stats["last_arrival"] = arrival_time
+            # ───── Jitter ─────
+            if stats["last_arrival"] is not None:
+                delta = arrival_time - stats["last_arrival"]
+                stats["jitter"] = 0.9 * stats["jitter"] + 0.1 * abs(delta)
 
-                stats["history"].append({
-                    "time": arrival_time,
-                    "jitter": stats["jitter"],
-                    "lost": stats["lost"],
-                    "packets": stats["packets"]
-                })
+            stats["last_arrival"] = arrival_time
 
-                # History begrenzen
-                if len(stats["history"]) > 100:
-                    stats["history"].pop(0)
+            # ───── Broadcast ─────
+            for client in list(clients.keys()):
 
-                # Broadcast
-                for client in list(clients.keys()):
-                    if time.time() - clients[client] > INACTIVITY_TIMEOUT:
-                        del clients[client]
-                        continue
+                if time.time() - clients[client] > INACTIVITY_TIMEOUT:
+                    log_event("INFO", "client_timeout",
+                              client=str(client))
+                    del clients[client]
+                    continue
 
-                    if session == 0:
-                        if client == from_address:
-                            server.sendto(message, client)
-                        continue
-
-                    if client != from_address:
+                if session == 0:
+                    if client == from_address:
                         server.sendto(message, client)
+                    continue
 
-        except queue.Empty:
-            continue
+                if client != from_address:
+                    server.sendto(message, client)
 
 # ─────────────────────────────
-# WEB INTERFACE
+# Web Monitor
 # ─────────────────────────────
 
 app = Flask(__name__)
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-<title>Morse Server Monitor</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-<h2>Morse Server Live Monitor</h2>
-<canvas id="chart" width="800" height="400"></canvas>
-
-<script>
-let ctx = document.getElementById('chart').getContext('2d');
-
-let chart = new Chart(ctx, {
-    type: 'line',
-    data: {
-        labels: [],
-        datasets: [{
-            label: 'Jitter',
-            data: [],
-            borderColor: 'blue',
-            fill: false
-        }]
-    }
-});
-
-async function update() {
-    let response = await fetch('/stats');
-    let data = await response.json();
-
-    let labels = [];
-    let jitterData = [];
-
-    for (let client in data.clients) {
-        let history = data.clients[client].history;
-        labels = history.map(x => new Date(x.time * 1000).toLocaleTimeString());
-        jitterData = history.map(x => x.jitter);
-    }
-
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = jitterData;
-    chart.update();
-}
-
-setInterval(update, 1000);
-</script>
-</body>
-</html>
-"""
-
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route("/stats")
-def stats():
     with clients_lock:
         return jsonify({
             "clients": {
                 str(addr): {
                     "packets": stats["packets"],
                     "lost": stats["lost"],
-                    "jitter": stats["jitter"],
-                    "history": stats["history"]
+                    "jitter": round(stats["jitter"], 6)
                 }
                 for addr, stats in client_stats.items()
             }
         })
 
-# ─────────────────────────────
-# SHUTDOWN HANDLER
-# ─────────────────────────────
-
-def shutdown_handler(sig, frame):
-    print("Shutting down cleanly...")
-    log_event("INFO", "server_shutdown")
-    shutdown_event.set()
-    server.close()
-
-signal.signal(signal.SIGINT, shutdown_handler)
-signal.signal(signal.SIGTERM, shutdown_handler)
+def run_web():
+    app.run(host="0.0.0.0", port=8080)
 
 # ─────────────────────────────
-# START THREADS
-# ─────────────────────────────
 
-t1 = threading.Thread(target=receive)
-t2 = threading.Thread(target=broadcast)
-t3 = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080, use_reloader=False))
+t1 = threading.Thread(target=receive, daemon=True)
+t2 = threading.Thread(target=broadcast, daemon=True)
+t3 = threading.Thread(target=run_web, daemon=True)
 
 t1.start()
 t2.start()
 t3.start()
 
-t1.join()
-t2.join()
-
-print("Server terminated cleanly.")
+while True:
+    time.sleep(1)
