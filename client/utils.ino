@@ -26,53 +26,64 @@ void beepTwice() {
   digitalWrite(LED, LOW);
 }
 
-// loopt solange, bis eins von zwei wlans verbunden ist
 void checkWiFi() {
-  while (WiFi.status() != WL_CONNECTED) {
-    if (digitalRead(NO_SOUND_MODE_PIN) == LOW)
-      NO_SOUND_MODE = true;
-    connectWiFi(ssid, password);
-    if (WiFi.status() != WL_CONNECTED)
-      connectWiFi(ssid2, password2);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
+  if (WiFi.status() != WL_CONNECTED)
+      connectWiFi(ssid, password);
+  if (WiFi.status() != WL_CONNECTED)
+    connectWiFi(ssid2, password2);
+}
+
+void checkPins() {
+  NO_SOUND_MODE = (digitalRead(NO_SOUND_MODE_PIN) == LOW);
+  NO_PRINTER_MODE = (digitalRead(NO_PRINTER_MODE_PIN) == LOW);
+  SELF_CHECK_MODE = (digitalRead(SELF_CHECK_MODE_PIN) == LOW);
+  SERVER_CHECK_MODE = (digitalRead(SERVER_CHECK_MODE_PIN) == LOW);
+  RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
+}
+
+void testMosfet() {
+  digitalWrite(MOSFET, LOW);
+  vTaskDelay(100 / portTICK_PERIOD_MS);
+  digitalWrite(MOSFET, HIGH);
 }
 
 // versucht sich mit einem WLAN zu verbinden
 void connectWiFi(const char *ssid, const char *password) {
   int connect_attempt = 0;  // verbindungs timeout
-  //Serial.print("Verbinde mit ");
-  //Serial.print(ssid);
+  Serial.print("Verbinde mit ");
+  Serial.print(ssid);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED && connect_attempt <= 5) {
     beepOnce();
-    //Serial.print(".");
+    Serial.print(".");
+    testMosfet(); // contains 100ms pause
+    checkPins();
     connect_attempt++;
   }
-  //Serial.println("");
+  Serial.println("");
   if (WiFi.status() != WL_CONNECTED) {
-    //Serial.println("Couldn't connect!");
+    Serial.println("Couldn't connect!");
     WiFi.disconnect();
     WiFi.mode(WIFI_OFF);  //sonst kann keine neue ssid & passwd vergeben werden
     vTaskDelay(500 / portTICK_PERIOD_MS);
     WiFi.mode(WIFI_STA);
   } else {
-    //Serial.println("\nWLAN Verbunden!");
-    //Serial.printf("IP-Adresse: %d.%d.%d.%d Empfang: %ddb\n", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], WiFi.RSSI());
+    Serial.println("WLAN Verbunden!");
+    Serial.printf("IP-Adresse: %d.%d.%d.%d Empfang: %ddb\n", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], WiFi.RSSI());
     beepTwice();
     WiFi.setSleep(false);  //um hoffentlich package loss zu verhindern
     udp.stop();
     udp.begin(udp_port);
-    //Serial.printf("Lausche und sende vermutlich nicht auf Port: %d haha\n", udp_port);
+    Serial.printf("Lausche und sende vermutlich nicht auf Port: %d haha\n", udp_port);
   }
 }
 
 void send_and_shift_window(WindowSlot *sliding_window) {
   if (xQueueSend(playbackQueue, &sliding_window[0].event, 0) != pdPASS) {
-    //Serial.printf("playbackQueue pass!!! \n");
+    Serial.printf("playbackQueue pass!!! \n");
   }
   if (xQueueSend(printQueue, &sliding_window[0].event, 0) != pdPASS) {
-    //Serial.printf("printQueue pass!!! \n");
+    Serial.printf("printQueue pass!!! \n");
   }
   for (int i = 0; i < WINDOW_SIZE - 1; i++) {
     sliding_window[i] = sliding_window[i+1];

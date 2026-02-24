@@ -1,6 +1,8 @@
 /*
  * es könnten noch sachen in drucker und fenster stecken bleiben, wenn stream aufhört
  * rickroll einabauen
+ * während des ersten wlan verbindens muss pin checker schon laufen! vor allem der mosfet schalter, sonst bekommt man nicht mehr aus, wenn wlan nicht finden und ton auch nicht
+ * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
  */
 
 #include <WiFi.h>
@@ -8,8 +10,7 @@
 #include <HardwareSerial.h>
 
 // WLAN-Zugangsdaten
-
-const char *ssid = "WGlan";
+const char *ssid = "WGla";
 const char *password = "51565735623896715310";
 const char *ssid2 = "Leibniz' Hotspot";
 const char *password2 = "";
@@ -87,10 +88,7 @@ void setup() {
   pinMode(SERVER_CHECK_MODE_PIN, INPUT);
   pinMode(RICK_ROLL_MODE_PIN, INPUT);
 
-  //startet das laden des super-caps
-  digitalWrite(MOSFET, HIGH);
-
-  //Serial.begin(115200);
+  Serial.begin(115200);
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
@@ -99,12 +97,13 @@ void setup() {
   playbackQueue = xQueueCreate(32, sizeof(MorseEvent));
   printQueue = xQueueCreate(32, sizeof(MorseEvent));
 
-
   xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
+  
+  /*
   while (WiFi.status() != WL_CONNECTED) {
     vTaskDelay(1);
   }
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  vTaskDelay(1000 / portTICK_PERIOD_MS);*/
 
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
   xTaskCreate(UdpTask, "udp Task", 4096, NULL, 1, NULL);
@@ -126,17 +125,10 @@ void loop() {
  */
 void CheckerTask(void *pvParameters) {
   while (true) {
-    digitalWrite(MOSFET, HIGH);
-    NO_SOUND_MODE = (digitalRead(NO_SOUND_MODE_PIN) == LOW);
-    NO_PRINTER_MODE = (digitalRead(NO_PRINTER_MODE_PIN) == LOW);
-    SELF_CHECK_MODE = (digitalRead(SELF_CHECK_MODE_PIN) == LOW);
-    SERVER_CHECK_MODE = (digitalRead(SERVER_CHECK_MODE_PIN) == LOW);
-    RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
+    testMosfet(); // contains 100ms pause
+    checkPins();
     checkWiFi();
-    vTaskDelay(800 / portTICK_PERIOD_MS);
-    digitalWrite(MOSFET, LOW);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -163,7 +155,7 @@ void InputTask(void *pvParameters) {
       packet.current_event = current_event;
       packet.recent_event = recent_event;
       if (xQueueSend(udpQueue, &packet, 0) != pdPASS) {
-        //Serial.printf("udpSendQueue pass!!!\n");
+        Serial.printf("udpSendQueue pass!!!\n");
       }
       recent_state = current_state;
       recent_ms = millis();
@@ -183,9 +175,9 @@ void UdpTask(void *pvParameters) {
       int packet_size = udp.parsePacket();
       if (packet_size >= sizeof(UdpPacket)) {
         udp.read((uint8_t *)&incoming, sizeof(UdpPacket));
-        //Serial.printf("received sess:%d seq:%d dur:%d stat:%d \n", incoming.session, incoming.current_event.seq, incoming.current_event.duration_ms, incoming.current_event.state);
+        Serial.printf("received sess:%d seq:%d dur:%d stat:%d \n", incoming.session, incoming.current_event.seq, incoming.current_event.duration_ms, incoming.current_event.state);
         if (xQueueSend(sortQueue, &incoming, 0) != pdPASS) {
-          //Serial.printf("sortQueue pass!!!\n");
+          Serial.printf("sortQueue pass!!!\n");
         }
       }
       // Packete senden
@@ -221,7 +213,7 @@ void SortingTask(void *pvParameters) {
     // einsortieren
     if (xQueueReceive(sortQueue, &packet, 0) == pdPASS) {
       if (packet.session != expected_session) {
-        //Serial.printf("Session changed!\n");
+        Serial.printf("Session changed!\n");
         expected_session = packet.session;
         expected_seq = packet.current_event.seq;
         highest_seq_seen = expected_seq;
@@ -229,7 +221,7 @@ void SortingTask(void *pvParameters) {
       // recent package
       int8_t pos = packet.recent_event.seq - expected_seq;  // neg = zu alt, pos = zu früh, 0 = expected
       if (pos >= WINDOW_SIZE) {
-        //Serial.printf("way to early package: +%d \n", pos);
+        Serial.printf("way to early package: +%d \n", pos);
       } else if (pos >= 0) {
         sliding_window[pos].event = packet.recent_event;
         sliding_window[pos].valid = true;
@@ -240,7 +232,7 @@ void SortingTask(void *pvParameters) {
         highest_seq_seen = packet.current_event.seq;
       }
       if (pos >= WINDOW_SIZE) {
-        //Serial.printf("way to early package: +%d \n", pos);
+        Serial.printf("way to early package: +%d \n", pos);
       } else if (pos >= 0) {
         sliding_window[pos].event = packet.current_event;
         sliding_window[pos].valid = true;
@@ -253,7 +245,7 @@ void SortingTask(void *pvParameters) {
       expected_seq++;
       last_time_sent = millis();
     } else if ((int8_t)(highest_seq_seen - expected_seq) >= LOSS_THRESHOLD_PKS) {
-      //Serial.printf("highest: %d \n", (highest_seq_seen - expected_seq));
+      Serial.printf("highest: %d \n", (highest_seq_seen - expected_seq));
       sliding_window[0].event.duration_ms = 10;
       sliding_window[0].event.state = false;
       sliding_window[0].event.seq = expected_seq;
