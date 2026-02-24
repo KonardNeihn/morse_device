@@ -1,8 +1,8 @@
 /*
  * es könnten noch sachen in drucker und fenster stecken bleiben, wenn stream aufhört
  * rickroll einabauen
- * während des ersten wlan verbindens muss pin checker schon laufen! vor allem der mosfet schalter, sonst bekommt man nicht mehr aus, wenn wlan nicht finden und ton auch nicht
  * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
+ * FEHLER: Verbinde mit WGlanE (65650) wifi:sta is connecting, cannot set config
  */
 
 #include <WiFi.h>
@@ -10,7 +10,7 @@
 #include <HardwareSerial.h>
 
 // WLAN-Zugangsdaten
-const char *ssid = "WGla";
+const char *ssid = "WGlan";
 const char *password = "51565735623896715310";
 const char *ssid2 = "Leibniz' Hotspot";
 const char *password2 = "";
@@ -212,6 +212,11 @@ void SortingTask(void *pvParameters) {
   while (true) {
     // einsortieren
     if (xQueueReceive(sortQueue, &packet, 0) == pdPASS) {
+      // im self- oder server check mode sollen fremde packete ignoriert werden
+      if ((SELF_CHECK_MODE || SERVER_CHECK_MODE) && packet.session != 0)
+        continue;
+      
+      // session wechsel
       if (packet.session != expected_session) {
         Serial.printf("Session changed!\n");
         expected_session = packet.session;
