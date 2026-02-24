@@ -27,12 +27,17 @@ void beepTwice() {
 }
 
 void checkWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(true, true);
+    delay(100);
+    WiFi.mode(WIFI_STA);
+  }
   if (WiFi.status() != WL_CONNECTED)
       connectWiFi(ssid, password);
   if (WiFi.status() != WL_CONNECTED)
     connectWiFi(ssid2, password2);
-  if (WiFi.status() != WL_CONNECTED)
-    ESP.restart();
+  //if (WiFi.status() != WL_CONNECTED)
+  //  ESP.restart();
 }
 
 void checkPins() {
@@ -65,15 +70,15 @@ void connectWiFi(const char *ssid, const char *password) {
   Serial.println("");
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Couldn't connect!");
-    WiFi.disconnect();
-    WiFi.mode(WIFI_OFF);  //sonst kann keine neue ssid & passwd vergeben werden
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    WiFi.disconnect(true, true);  //sonst kann keine neue ssid & passwd vergeben werden
+    delay(100);
     WiFi.mode(WIFI_STA);
   } else {
     Serial.println("WLAN Verbunden!");
     Serial.printf("IP-Adresse: %d.%d.%d.%d Empfang: %ddb\n", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], WiFi.RSSI());
     beepTwice();
     WiFi.setSleep(false);  //um hoffentlich package loss zu verhindern
+    esp_wifi_set_ps(WIFI_PS_NONE);
     udp.stop();
     udp.begin(udp_port);
     Serial.printf("Lausche und sende vermutlich nicht auf Port: %d haha\n", udp_port);

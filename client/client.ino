@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <HardwareSerial.h>
+#include <esp_wifi.h>
 
 // WLAN-Zugangsdaten
 const char *ssid = "WGlan";
@@ -25,7 +26,7 @@ const int udp_port = 6969;                    // Port zum Senden und Empfangen
 #define LOSS_THRESHOLD_PKS 8
 #define LOSS_THRESHOLD_MS 500
 #define TARGET_RING_BUFFER_MS 1000
-#define RING_BUFFER_SIZE 16
+#define RING_BUFFER_SIZE 32
 #define SOUND_FREQ 200
 
 
@@ -186,7 +187,7 @@ void UdpTask(void *pvParameters) {
         udp.endPacket();
       }
     }
-    vTaskDelay(5 / portTICK_PERIOD_MS);
+    vTaskDelay(1 / portTICK_PERIOD_MS);   // klein, weil chat sagt, udp buffer relativ klein (bei burst doof)
   }
 }
 
@@ -217,7 +218,7 @@ void SortingTask(void *pvParameters) {
         highest_seq_seen = expected_seq;
       }
       // recent package
-      int8_t pos = packet.recent_event.seq - expected_seq;  // neg = zu alt, pos = zu früh, 0 = expected
+      int8_t pos = (int8_t)(packet.recent_event.seq - expected_seq);  // neg = zu alt, pos = zu früh, 0 = expected
       if (pos >= WINDOW_SIZE) {
         Serial.printf("way to early package: +%d \n", pos);
       } else if (pos >= 0) {
