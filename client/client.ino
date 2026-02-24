@@ -1,8 +1,6 @@
 /*
  * es könnten noch sachen in drucker und fenster stecken bleiben, wenn stream aufhört
  * rickroll einabauen
- * während des ersten wlan verbindens muss pin checker schon laufen! vor allem der mosfet schalter, sonst bekommt man nicht mehr aus, wenn wlan nicht finden und ton auch nicht
- * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
  */
 
 #include <WiFi.h>
@@ -10,7 +8,7 @@
 #include <HardwareSerial.h>
 
 // WLAN-Zugangsdaten
-const char *ssid = "WGla";
+const char *ssid = "WGlan";
 const char *password = "51565735623896715310";
 const char *ssid2 = "Leibniz' Hotspot";
 const char *password2 = "";
