@@ -98,13 +98,6 @@ void setup() {
   printQueue = xQueueCreate(32, sizeof(MorseEvent));
 
   xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
-  
-  /*
-  while (WiFi.status() != WL_CONNECTED) {
-    vTaskDelay(1);
-  }
-  vTaskDelay(1000 / portTICK_PERIOD_MS);*/
-
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
   xTaskCreate(UdpTask, "udp Task", 4096, NULL, 1, NULL);
   xTaskCreate(SortingTask, "Sorting Task", 4096, NULL, 1, NULL);
