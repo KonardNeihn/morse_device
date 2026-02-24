@@ -1,6 +1,8 @@
 /*
  * es könnten noch sachen in drucker und fenster stecken bleiben, wenn stream aufhört
  * rickroll einabauen
+ * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
+ * FEHLER: Verbinde mit WGlanE (65650) wifi:sta is connecting, cannot set config
  */
 
 #include <WiFi.h>
@@ -96,13 +98,6 @@ void setup() {
   printQueue = xQueueCreate(32, sizeof(MorseEvent));
 
   xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
-  
-  /*
-  while (WiFi.status() != WL_CONNECTED) {
-    vTaskDelay(1);
-  }
-  vTaskDelay(1000 / portTICK_PERIOD_MS);*/
-
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
   xTaskCreate(UdpTask, "udp Task", 4096, NULL, 1, NULL);
   xTaskCreate(SortingTask, "Sorting Task", 4096, NULL, 1, NULL);
@@ -210,6 +205,11 @@ void SortingTask(void *pvParameters) {
   while (true) {
     // einsortieren
     if (xQueueReceive(sortQueue, &packet, 0) == pdPASS) {
+      // im self- oder server check mode sollen fremde packete ignoriert werden
+      if ((SELF_CHECK_MODE || SERVER_CHECK_MODE) && packet.session != 0)
+        continue;
+      
+      // session wechsel
       if (packet.session != expected_session) {
         Serial.printf("Session changed!\n");
         expected_session = packet.session;
