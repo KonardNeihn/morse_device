@@ -3,102 +3,154 @@ import threading
 import queue
 import time
 import struct
+import json
+from flask import Flask, jsonify
 
-INACTIVITY_TIMEOUT = 3600   # 1 Stunde
+INACTIVITY_TIMEOUT = 3600
 RECEIVE_PORT = 6969
-BIND_IP = "192.168.178.103"
 
-# ─────────────────────────────────────────────
-# ESP32 Paket:
-# struct UdpPacket {
-#   uint8_t session;
-#   MorseEvent current_event;
-#   MorseEvent recent_event;
-# };
-#
-# struct MorseEvent {
-#   uint8_t  seq;
-#   uint16_t duration_ms;
-#   bool     state;
-# };
-#
-# => 9 Bytes total, little endian, packed!
-# ─────────────────────────────────────────────
+PACKET_STRUCT = struct.Struct("<B B H B B H B")
 
-PACKET_STRUCT = struct.Struct("<B B H B B H B")  # total 9 bytes
-
-messages = queue.Queue()       # thread-safe
-clients = {}                   # { address : last_seen }
+messages = queue.Queue()
+clients = {}
+last_seq = {}
+client_stats = {}
 clients_lock = threading.Lock()
 
-print("Server IP:", socket.gethostbyname(socket.gethostname()))
+# ─────────────────────────────
+# JSON Logging
+# ─────────────────────────────
+
+def log_event(level, event, **kwargs):
+    entry = {
+        "timestamp": time.time(),
+        "level": level,
+        "event": event,
+        **kwargs
+    }
+    with open("morse_server.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+# ─────────────────────────────
+# Auto IP Bind
+# ─────────────────────────────
 
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server.bind((BIND_IP, RECEIVE_PORT))
+server.bind(("0.0.0.0", RECEIVE_PORT))
 
+print(f"Server running on UDP *:{RECEIVE_PORT}")
+log_event("INFO", "server_start", port=RECEIVE_PORT)
+
+# ─────────────────────────────
 
 def receive():
     while True:
-        try:
-            message, address = server.recvfrom(64)  # größer als nötig, sicher
-            if len(message) != PACKET_STRUCT.size:
-                print(f"Ignoring invalid packet size {len(message)} from {address}")
-                continue
+        message, address = server.recvfrom(64)
 
-            messages.put((message, address))
+        now = time.time()
 
-            with clients_lock:
-                clients[address] = time.time()
+        if len(message) != PACKET_STRUCT.size:
+            log_event("WARN", "invalid_packet", client=str(address))
+            continue
 
-        except Exception as e:
-            print(f"Error in receive(): {e}")
+        messages.put((message, address, now))
+
+        with clients_lock:
+            if address not in clients:
+                log_event("INFO", "client_registered", client=str(address))
+                client_stats[address] = {
+                    "packets": 0,
+                    "lost": 0,
+                    "last_arrival": None,
+                    "jitter": 0,
+                }
+
+            clients[address] = now
 
 
 def broadcast():
     while True:
-        try:
-            message, from_address = messages.get()
+        message, from_address, arrival_time = messages.get()
 
-            (
-                session,
-                cur_seq, cur_duration, cur_state,
-                rec_seq, rec_duration, rec_state
-            ) = PACKET_STRUCT.unpack(message)
+        (
+            session,
+            cur_seq, cur_duration, cur_state,
+            rec_seq, rec_duration, rec_state
+        ) = PACKET_STRUCT.unpack(message)
 
-            # Debug (optional)
-            print(
-                f"RX {from_address} | "
-                f"S={session} | "
-                f"CUR(seq={cur_seq}, dur={cur_duration}, state={cur_state}) | "
-                f"REC(seq={rec_seq}, dur={rec_duration}, state={rec_state})"
-            )
+        with clients_lock:
 
-            to_remove = []
+            stats = client_stats[from_address]
+            stats["packets"] += 1
 
-            with clients_lock:
-                for client, last_seen in clients.items():
-                    if time.time() - last_seen > INACTIVITY_TIMEOUT:
-                        to_remove.append(client)
-                        continue
+            # ───── Packet Loss ─────
+            if from_address in last_seq:
+                expected = (last_seq[from_address] + 1) & 0xFF
+                if cur_seq != expected:
+                    lost = (cur_seq - expected) & 0xFF
+                    stats["lost"] += lost
+                    log_event("WARN", "packet_loss",
+                              client=str(from_address),
+                              lost=lost)
 
-                    if client != from_address:
-                        server.sendto(message, client)
+            last_seq[from_address] = cur_seq
 
-                for client in to_remove:
+            # ───── Jitter ─────
+            if stats["last_arrival"] is not None:
+                delta = arrival_time - stats["last_arrival"]
+                stats["jitter"] = 0.9 * stats["jitter"] + 0.1 * abs(delta)
+
+            stats["last_arrival"] = arrival_time
+
+            # ───── Broadcast ─────
+            for client in list(clients.keys()):
+
+                if time.time() - clients[client] > INACTIVITY_TIMEOUT:
+                    log_event("INFO", "client_timeout",
+                              client=str(client))
                     del clients[client]
+                    continue
 
-        except Exception as e:
-            print(f"Error in broadcast(): {e}")
+                if session == 0:
+                    if client == from_address:
+                        server.sendto(message, client)
+                    continue
 
+                if client != from_address:
+                    server.sendto(message, client)
+
+# ─────────────────────────────
+# Web Monitor
+# ─────────────────────────────
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    with clients_lock:
+        return jsonify({
+            "clients": {
+                str(addr): {
+                    "packets": stats["packets"],
+                    "lost": stats["lost"],
+                    "jitter": round(stats["jitter"], 6)
+                }
+                for addr, stats in client_stats.items()
+            }
+        })
+
+def run_web():
+    app.run(host="0.0.0.0", port=8080)
+
+# ─────────────────────────────
 
 t1 = threading.Thread(target=receive, daemon=True)
 t2 = threading.Thread(target=broadcast, daemon=True)
+t3 = threading.Thread(target=run_web, daemon=True)
 
 t1.start()
 t2.start()
+t3.start()
 
-print("UDP Morse relay server running...")
-
-# Hauptthread am Leben halten
 while True:
     time.sleep(1)
