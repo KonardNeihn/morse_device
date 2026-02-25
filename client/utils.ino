@@ -1,5 +1,5 @@
 void playTone() {
-  if (!NO_SOUND_MODE)          // nur wenn der drehschalter nicht "ohne Ton" sagt (LOW = angeschaltet)
+  if (!NO_SOUND_MODE)           // nur wenn der drehschalter nicht "ohne Ton" sagt (LOW = angeschaltet)
     tone(SPEAKER, SOUND_FREQ);  // tone() blockiert auf dem esp32 den thread NICHT
 }
 
@@ -33,7 +33,7 @@ void checkWiFi() {
     WiFi.mode(WIFI_STA);
   }
   if (WiFi.status() != WL_CONNECTED)
-      connectWiFi(ssid, password);
+    connectWiFi(ssid, password);
   if (WiFi.status() != WL_CONNECTED)
     connectWiFi(ssid2, password2);
   //if (WiFi.status() != WL_CONNECTED)
@@ -63,7 +63,7 @@ void connectWiFi(const char *ssid, const char *password) {
   while (WiFi.status() != WL_CONNECTED && connect_attempt <= 5) {
     beepOnce();
     Serial.print(".");
-    testMosfet(); // contains 100ms pause
+    testMosfet();  // contains 100ms pause
     checkPins();
     connect_attempt++;
   }
@@ -85,46 +85,35 @@ void connectWiFi(const char *ssid, const char *password) {
   }
 }
 
-void send_and_shift_window(WindowSlot *sliding_window) {
-  if (xQueueSend(playbackQueue, &sliding_window[0].event, 0) != pdPASS) {
-    Serial.printf("playbackQueue pass!!! \n");
-  }
-  if (xQueueSend(printQueue, &sliding_window[0].event, 0) != pdPASS) {
-    Serial.printf("printQueue pass!!! \n");
-  }
-  for (int i = 0; i < WINDOW_SIZE - 1; i++) {
-    sliding_window[i] = sliding_window[i+1];
-  }
-  sliding_window[WINDOW_SIZE - 1].valid = false;
-}
-
-void playback(MorseEvent *event, bool *sound_on) {
-  if ((event->state) == true) {     // equivalent mit (*event).state
-    if (*sound_on == false) { // sonst hackt das bei dauerhaftem drücken
+void playback(uint8_t *signal, bool *sound_on) {
+  uint8_t mask = 0b00000001;
+  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
+    if ((*signal & mask) && *sound_on == false) {
       playTone();
+      digitalWrite(LED, HIGH);
+      *sound_on = true;
+    } else {
+      noTone(SPEAKER);
+      digitalWrite(LED, LOW);
+      *sound_on = false;
     }
-    digitalWrite(LED, HIGH);
-    *sound_on = true;
-  } else {
-    noTone(SPEAKER);
-    digitalWrite(LED, LOW);
-    *sound_on = false;
+    mask <<= 1;
+    vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
   }
-  vTaskDelay((event->duration_ms) / portTICK_PERIOD_MS);
 }
 
 void print(bool top_line[384], bool bottom_line[384]) {
   // Reset with ESC @
-  printer.write(27);  // ESC
-  printer.write('@'); // @
+  printer.write(27);   // ESC
+  printer.write('@');  // @
   vTaskDelay(1);
 
   // configure heating parameters ESC 7
-  printer.write(27);    // ESC
-  printer.write(55);    // 7
-  printer.write(1);     // n1   → heizpunkte, die gleichzeitig laufen dürfen              evtl dunkler bei größerer anzahl, das heizpunkte gemeinsam sich gegenseitig heizen
-  printer.write(255);   // n2   → Länge Heizzeit (hoch -> langsam, aber dunkler)          evtl bringt 255 nicht so viel, 
-  printer.write(255);   // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
+  printer.write(27);   // ESC
+  printer.write(55);   // 7
+  printer.write(1);    // n1   → heizpunkte, die gleichzeitig laufen dürfen              evtl dunkler bei größerer anzahl, das heizpunkte gemeinsam sich gegenseitig heizen
+  printer.write(255);  // n2   → Länge Heizzeit (hoch -> langsam, aber dunkler)          evtl bringt 255 nicht so viel,
+  printer.write(255);  // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
   vTaskDelay(1);
 
   // ESC 3 Line spacing auf 0 setzen
@@ -144,16 +133,16 @@ void print(bool top_line[384], bool bottom_line[384]) {
   printer.write((uint8_t)1);    // nH = 1 (1*256)    Zeilenlänge = nL + nH * 256 = 384
   vTaskDelay(1);
 
-  for(int i = 0; i < 384; i++) {
+  for (int i = 0; i < 384; i++) {
     uint8_t column = 0b00010000;  // eine Trennlinie zwischen den Zeilen
-    if(top_line[i])
-      column = column | 0b11000000; // obere Zeile
-    if(bottom_line[i])
-      column = column | 0b00000110; // untere Zeile
+    if (top_line[i])
+      column = column | 0b11000000;  // obere Zeile
+    if (bottom_line[i])
+      column = column | 0b00000110;  // untere Zeile
 
     printer.write(column);  // die Spalte an den Drucker senden
 
-    if(i % 16 == 0) // alle 16 Spalten mal kurz durchatmen (evtl auch wichtig für den watchdog)
+    if (i % 16 == 0)  // alle 16 Spalten mal kurz durchatmen (evtl auch wichtig für den watchdog)
       vTaskDelay(1);
   }
   printer.flush();

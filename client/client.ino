@@ -22,13 +22,13 @@ const char *udp_address = "morse.hopto.org";  // IP des Servers
 const int udp_port = 6969;                    // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define WINDOW_SIZE 16
-#define LOSS_THRESHOLD_PKS 8
-#define LOSS_THRESHOLD_MS 500
-#define TARGET_RING_BUFFER_MS 1000
-#define RING_BUFFER_SIZE 32
-#define SOUND_FREQ 200
+#define NUM_BLOCKS 2         // für interleaving
+#define FRAMES_PER_BLOCK 4   // 4 Packete ergeben einen FEC Block, für jeden Block ein XOR
+#define SAMPLES_PER_FRAME 4  // Anzahl der Abtastungen in einem Packet
+#define SAMPLING_RATE_MS 5   // eine Abtastung
 
+#define BUFFER_SIZE (FRAMES_PER_BLOCK * NUM_BLOCKS)
+#define SOUND_FREQ 200
 
 
 
@@ -45,22 +45,30 @@ const int udp_port = 6969;                    // Port zum Senden und Empfangen
 #define SERVER_CHECK_MODE_PIN 32
 #define RICK_ROLL_MODE_PIN 35
 
-struct __attribute__((packed)) MorseEvent {
-  uint8_t seq;
-  uint16_t duration_ms;
-  bool state;  // 1 = Ton, 0 = Pause
+struct __attribute__((packed)) Packet {
+  uint8_t type;  // 0 = DATA, 1 = FEC
+  uint8_t block_id;
+  uint8_t frame_id;  // 0-3 bei DATA, 4 bei FEC
+  uint32_t timestamp;
+  uint8_t signal;
 };
 
-struct __attribute__((packed)) UdpPacket {
-  uint8_t session;
-  MorseEvent current_event;
-  MorseEvent recent_event;
+struct Block {
+  uint8_t block_id;
+  bool received[FRAMES_PER_BLOCK + 1];
+  Packet packets[FRAMES_PER_BLOCK + 1];
+  uint32_t first_seen_time;
+  bool ready;
 };
 
-struct WindowSlot {
-  bool valid;
-  MorseEvent event;
+struct LossStats {
+  uint32_t total_frames;
+  uint32_t lost_frames;
+  uint32_t recovered_frames;
+  uint32_t burst_losses;
 };
+
+LossStats stats = { 0 };
 
 //bool BUTTON_PRESSED = false;  // muss öfter gecheckt werdem, darum lieber im sample send task
 volatile bool NO_SOUND_MODE = false;
@@ -93,10 +101,10 @@ void setup() {
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  udpQueue = xQueueCreate(32, sizeof(UdpPacket));
-  sortQueue = xQueueCreate(32, sizeof(UdpPacket));
-  playbackQueue = xQueueCreate(32, sizeof(MorseEvent));
-  printQueue = xQueueCreate(32, sizeof(MorseEvent));
+  udpQueue = xQueueCreate(BUFFER_SIZE, sizeof(Packet));
+  sortQueue = xQueueCreate(BUFFER_SIZE, sizeof(Packet));
+  playbackQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
+  printQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
 
   xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
@@ -119,7 +127,7 @@ void loop() {
  */
 void CheckerTask(void *pvParameters) {
   while (true) {
-    testMosfet(); // contains 100ms pause
+    testMosfet();  // contains 100ms pause
     checkPins();
     checkWiFi();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -127,161 +135,247 @@ void CheckerTask(void *pvParameters) {
 }
 
 void InputTask(void *pvParameters) {
-  MorseEvent current_event;
-  MorseEvent recent_event;
-  UdpPacket packet;
-  bool current_state = false;
-  bool recent_state = false;
-  uint8_t session = esp_random() & 0xFF;
-  uint8_t seq = 4;
-  uint16_t duration_ms;
-  unsigned long recent_ms = millis();
+  Packet blocks[NUM_BLOCKS][FRAMES_PER_BLOCK];
+
+  uint8_t write_index[NUM_BLOCKS];
+  uint8_t block_id[NUM_BLOCKS];
+
+  // pre shift für round robin
+  for (int i = 0; i < NUM_BLOCKS; i++) {
+    write_index[i] = (i * FRAMES_PER_BLOCK) / NUM_BLOCKS;
+    block_id[i] = i;
+  }
+
+  uint8_t current_block = 0;
 
   while (true) {
-    current_state = !digitalRead(BUTTON);
-    duration_ms = millis() - recent_ms;
-    if (current_state != recent_state || duration_ms >= 200) {
-      recent_event = current_event;  // memcpy
-      current_event.duration_ms = duration_ms;
-      current_event.state = recent_state;  // für das gerade beendete event
-      current_event.seq = seq;
-      packet.session = session;
-      packet.current_event = current_event;
-      packet.recent_event = recent_event;
-      if (xQueueSend(udpQueue, &packet, 0) != pdPASS) {
+    // Frame ins Ringbuffer schreiben
+    blocks[current_block][write_index[current_block]].type = 0;
+    blocks[current_block][write_index[current_block]].block_id = block_id[current_block];
+    blocks[current_block][write_index[current_block]].frame_id = write_index[current_block];
+    blocks[current_block][write_index[current_block]].timestamp = millis();
+    blocks[current_block][write_index[current_block]].signal = sampleSignal();
+
+    // sende den Frame
+    if (xQueueSend(udpQueue, &blocks[current_block][write_index[current_block]], 0) != pdPASS) {
+      Serial.printf("udpSendQueue pass!!!\n");
+    }
+
+    write_index[current_block]++;
+
+    // Block fertig → FEC berechnen
+    if (write_index[current_block] == FRAMES_PER_BLOCK) {
+      Packet fec;
+      fec.type = 1;
+      fec.block_id = block_id[current_block];
+      fec.frame_id = FRAMES_PER_BLOCK;
+      fec.timestamp = millis();
+      uint8_t xor_signal = 0;
+      for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+        xor_signal ^= blocks[current_block][i].signal;
+      }
+      fec.signal = xor_signal;
+
+      // sende den Frame
+      if (xQueueSend(udpQueue, &fec, 0) != pdPASS) {
         Serial.printf("udpSendQueue pass!!!\n");
       }
-      recent_state = current_state;
-      recent_ms = millis();
-      seq++;
+
+      // Reset Block
+      write_index[current_block] = 0;
+      block_id[current_block]++;
     }
-    vTaskDelay(5 / portTICK_PERIOD_MS);  // andere lösung? jetzt ist duration_ms nugenutzter speicher, weil nur in 5er schritten auftritt, aber schnellstes tippen ist 50ms lang
+
+    current_block = (current_block + 1) % NUM_BLOCKS;  // Nächstes Block für Interleaving
   }
 }
 
+// samples aufnehmen
+uint8_t sampleSignal() {
+  uint8_t signal = 0;
+  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
+    signal <<= 1;
+    if (digitalRead(BUTTON) == false)  // button pressed
+      signal++;
+    vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+  }
+  return signal;
+}
+
 void UdpTask(void *pvParameters) {
-  UdpPacket outgoing;
-  UdpPacket incoming;
+  Packet outgoing;
+  Packet incoming;
 
   while (true) {
     if (WiFi.status() == WL_CONNECTED) {
       // Packete empfangen
       int packet_size = udp.parsePacket();
-      if (packet_size >= sizeof(UdpPacket)) {
-        udp.read((uint8_t *)&incoming, sizeof(UdpPacket));
-        Serial.printf("received sess:%d seq:%d dur:%d stat:%d \n", incoming.session, incoming.current_event.seq, incoming.current_event.duration_ms, incoming.current_event.state);
+      if (packet_size >= sizeof(Packet)) {
+        udp.read((uint8_t *)&incoming, sizeof(Packet));
+        Serial.printf("received type:%d block:%d frame:%d time:%d signal:%d \n", incoming.type, incoming.block_id, incoming.frame_id, incoming.timestamp, incoming.signal);
         if (xQueueSend(sortQueue, &incoming, 0) != pdPASS) {
           Serial.printf("sortQueue pass!!!\n");
         }
       }
       // Packete senden
       if (xQueueReceive(udpQueue, &outgoing, 0) == pdPASS) {
-        if (SERVER_CHECK_MODE || SELF_CHECK_MODE) {
-          outgoing.session = 0;
-        }
         if (SELF_CHECK_MODE)
           udp.beginPacket("127.0.0.1", udp_port);  // 127.0.0.1 ist man selber im wlan modul
         else
           udp.beginPacket(udp_address, udp_port);
-        udp.write((uint8_t *)&outgoing, sizeof(UdpPacket));
+        udp.write((uint8_t *)&outgoing, sizeof(Packet));
         udp.endPacket();
       }
     }
-    vTaskDelay(1 / portTICK_PERIOD_MS);   // klein, weil chat sagt, udp buffer relativ klein (bei burst doof)
+    vTaskDelay(1 / portTICK_PERIOD_MS);  // klein, weil chat sagt, udp buffer relativ klein (bei burst doof)
   }
 }
 
 void SortingTask(void *pvParameters) {
-  UdpPacket packet;
-  // stuff for sorting
-  WindowSlot sliding_window[WINDOW_SIZE];
-  memset(sliding_window, 0, sizeof(sliding_window));
-  uint8_t expected_seq = 0;
-  uint8_t expected_session = esp_random() & 0xFF;
 
-  // stuff for managing loss
-  uint8_t highest_seq_seen = 0;
-  unsigned long last_time_sent = millis();
+  Block blocks[NUM_BLOCKS];
+  uint32_t next_play_seq = 0;
+  Packet packet;
+
+  // einmal alle block ids ungültig machen
+  for (int i = 0; i < NUM_BLOCKS; i++) {
+    blocks[i].block_id = 255;  // ungültig
+  }
 
   while (true) {
-    // einsortieren
-    if (xQueueReceive(sortQueue, &packet, 0) == pdPASS) {
-      // im self- oder server check mode sollen fremde packete ignoriert werden
-      if ((SELF_CHECK_MODE || SERVER_CHECK_MODE) && packet.session != 0)
-        continue;
-      
-      // session wechsel
-      if (packet.session != expected_session) {
-        Serial.printf("Session changed!\n");
-        expected_session = packet.session;
-        expected_seq = packet.current_event.seq;
-        highest_seq_seen = expected_seq;
+    if (xQueueReceive(sortQueue, &packet, portMAX_DELAY) == pdPASS) {
+      uint8_t block_id = packet.block_id % NUM_BLOCKS;
+
+      // block reset, falls neuer block
+      if (packet.block_id != blocks[block_id].block_id) {
+        if (blocks[block_id].ready == false) {
+          fillLosses(&blocks[block_id]);
+          tryPlayback(blocks, &next_play_seq);
+        }
+        resetBlock(&blocks[block_id], packet.block_id);  // hier wäre ein guter moment, um einen loss zu akzeptieren bzw muss ja
       }
-      // recent package
-      int8_t pos = (int8_t)(packet.recent_event.seq - expected_seq);  // neg = zu alt, pos = zu früh, 0 = expected
-      if (pos >= WINDOW_SIZE) {
-        Serial.printf("way to early package: +%d \n", pos);
-      } else if (pos >= 0) {
-        sliding_window[pos].event = packet.recent_event;
-        sliding_window[pos].valid = true;
-      }
-      // current package
-      pos = packet.current_event.seq - expected_seq;  // neg = zu alt, pos = zu früh, 0 = expected
-      if ((int8_t)(packet.current_event.seq - highest_seq_seen) > 0) {
-        highest_seq_seen = packet.current_event.seq;
-      }
-      if (pos >= WINDOW_SIZE) {
-        Serial.printf("way to early package: +%d \n", pos);
-      } else if (pos >= 0) {
-        sliding_window[pos].event = packet.current_event;
-        sliding_window[pos].valid = true;
-      }
+
+      blocks[block_id].packets[packet.frame_id] = packet;
+      blocks[block_id].received[packet.frame_id] = true;
+
+      checkBlockReady(&blocks[block_id]);
+      tryPlayback(blocks, &next_play_seq);
+    }
+  }
+}
+
+void fillLosses(Block *block) {
+  for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+    if (block->received[i] == false) {
+      block->packets[i].signal = 0b01010101;
+      block->ready = true;
+      stats.lost_frames++;
+    }
+  }
+}
+
+void resetBlock(Block *block, uint8_t new_id) {
+  block->block_id = new_id;
+  block->ready = false;
+  block->first_seen_time = millis();
+
+  for (int i = 0; i <= FRAMES_PER_BLOCK; i++)
+    block->received[i] = false;
+}
+
+void checkBlockReady(Block *block) {
+  int missing = -1;
+  int missing_count = 0;
+
+  for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+    if (block->received[i] == false) {
+      missing = i;
+      missing_count++;
+    }
+  }
+
+  // wenn alle frames da und kein FEC gebraucht wird
+  if (missing_count == 0) {
+    block->ready = true;
+    return;
+  }
+
+  // fec schon da?
+  bool fec_present = block->received[FRAMES_PER_BLOCK];
+
+  // wenn rekonstruiert werden kann
+  if (missing_count == 1 && fec_present) {
+    uint8_t xor_signal = block->packets[FRAMES_PER_BLOCK].signal;
+
+    for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
+      if (i != missing)
+        xor_signal ^= block->packets[i].signal;
     }
 
-    // übergeben ggf loss managen
-    if (sliding_window[0].valid) {
-      send_and_shift_window(&sliding_window[0]);
-      expected_seq++;
-      last_time_sent = millis();
-    } else if ((int8_t)(highest_seq_seen - expected_seq) >= LOSS_THRESHOLD_PKS) {
-      Serial.printf("highest: %d \n", (highest_seq_seen - expected_seq));
-      sliding_window[0].event.duration_ms = 10;
-      sliding_window[0].event.state = false;
-      sliding_window[0].event.seq = expected_seq;
-      send_and_shift_window(&sliding_window[0]);
-      expected_seq++;
+    block->packets[missing].signal = xor_signal;
+    block->received[missing] = true;
+    block->ready = true;
+    stats.recovered_frames++;
+    return;
+  }
+  // Mehr als 1 fehlt → nicht ready
+}
+
+void tryPlayback(Block blocks[], uint32_t *next_play_seq) {
+  while (true) {
+    uint8_t expected_block = *next_play_seq / FRAMES_PER_BLOCK;
+    uint8_t expected_frame = *next_play_seq % FRAMES_PER_BLOCK;
+    uint8_t block_id = expected_block % NUM_BLOCKS;
+
+    if (blocks[block_id].block_id != expected_block)
+      return;
+
+    if (blocks[block_id].ready && blocks[block_id].received[expected_frame]) {
+
+      if (xQueueSend(playbackQueue, &blocks[block_id].packets[expected_frame].signal, 0) != pdPASS) {
+        Serial.printf("playbackQueue pass!!!\n");
+      }
+      if (xQueueSend(printQueue, &blocks[block_id].packets[expected_frame].signal, 0) != pdPASS) {
+        Serial.printf("printQueue pass!!!\n");
+      }
+      (*next_play_seq)++;
+      continue;
     }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+    return;  // warten
   }
 }
 
 void PlaybackTask(void *pvParameters) {
-  MorseEvent ring_buffer[RING_BUFFER_SIZE];
+  uint8_t ring_buffer[BUFFER_SIZE];
   int write_index = 0;
   int read_index = 0;
   int buffered_packets = 0;
-  int buffered_ms = 0;
   bool buffering = true;
   bool sound_on = false;
+
   while (true) {
-    while (buffered_packets < RING_BUFFER_SIZE && xQueueReceive(playbackQueue, &ring_buffer[write_index], 0) == pdPASS) {
-      buffered_ms += ring_buffer[write_index].duration_ms;
+
+    // so viele packete lesen, wies geht
+    while (buffered_packets < BUFFER_SIZE && xQueueReceive(playbackQueue, &ring_buffer[write_index], 0) == pdPASS) {
       buffered_packets++;
-      write_index = (write_index + 1) % RING_BUFFER_SIZE;
+      write_index = (write_index + 1) % BUFFER_SIZE;
     }
+
+    // buffering status ändern oder warten
     if (buffering) {
-      if (buffered_ms > TARGET_RING_BUFFER_MS || buffered_packets == RING_BUFFER_SIZE) {
+      if (buffered_packets > BUFFER_SIZE / 2) {
         buffering = false;
       } else {
         vTaskDelay(5 / portTICK_PERIOD_MS);
       }
     }
+
+    // wenn samples abgespielt gespielt werden
     if (buffering == false) {
       if (buffered_packets > 0) {
         playback(&ring_buffer[read_index], &sound_on);
-        buffered_ms -= ring_buffer[read_index].duration_ms;
         buffered_packets--;
-        read_index = (read_index + 1) % RING_BUFFER_SIZE;
+        read_index = (read_index + 1) % BUFFER_SIZE;
       } else {
         noTone(SPEAKER);
         buffering = true;
@@ -291,47 +385,53 @@ void PlaybackTask(void *pvParameters) {
 }
 
 void PrintTask(void *pvParameters) {
-  MorseEvent event;
+  uint8_t signal;
   static bool top_line[384];
   static bool bottom_line[384];
   int index = 0;
   bool writing_top_line = true;
   bool something_in_it = false;
 
+
   while (true) {
-    if (xQueueReceive(printQueue, &event, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
-      int width_in_pixels = event.duration_ms / 10;                    // alle 10 millisec bedeuten ein pixel druck. ohne rest
+    if (xQueueReceive(printQueue, &signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
+      uint8_t mask = 0b00000001;
+      for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
 
-      // nichts anfangen, nichts zu drucken
-      if (event.state == false && something_in_it == false) {
-        width_in_pixels = 0;
-      } else {
-        something_in_it = true;
-      }
+        int width_in_pixels = SAMPLING_RATE_MS / 10;  // alle 10 millisec bedeuten ein pixel druck. ohne rest
 
-      // erstellt und sammelt die daten für den druck
-      while (width_in_pixels > 0) {
-        //Serial.printf("%d", event.state);
-        if (writing_top_line) {
-          top_line[index] = event.state;
+        // nichts anfangen, nichts zu drucken
+        if ((signal & mask) && something_in_it == false) {
+          width_in_pixels = 0;
         } else {
-          bottom_line[index] = event.state;
+          something_in_it = true;
         }
-        index++;
-        width_in_pixels--;
-        if (index == 384) {
-          if (writing_top_line == true) {
-            writing_top_line = false;
-            index = 0;
+
+        // erstellt und sammelt die daten für den druck
+        while (width_in_pixels > 0) {
+          //Serial.printf("%d", event.state);
+          if (writing_top_line) {
+            top_line[index] = (signal & mask);
           } else {
-            if (NO_PRINTER_MODE == false) {
-              print(top_line, bottom_line);
+            bottom_line[index] = (signal & mask);
+          }
+          index++;
+          width_in_pixels--;
+          if (index == 384) {
+            if (writing_top_line == true) {
+              writing_top_line = false;
+              index = 0;
+            } else {
+              if (NO_PRINTER_MODE == false) {
+                print(top_line, bottom_line);
+              }
+              something_in_it = false;
+              writing_top_line = true;
+              index = 0;
             }
-            something_in_it = false;
-            writing_top_line = true;
-            index = 0;
           }
         }
+        mask <<= 1;
       }
     }
   }
