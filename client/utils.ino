@@ -85,8 +85,8 @@ void connectWiFi(const char *ssid, const char *password) {
   }
 }
 
-void playback(uint8_t *signal, bool *sound_on) {
-  uint8_t mask = 0b00000001;
+void playback(uint32_t *signal, bool *sound_on) {
+  uint32_t mask = 0b00000001;
   for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
     if ((*signal & mask) && *sound_on == false) {
       playTone();

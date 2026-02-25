@@ -24,7 +24,7 @@ const int udp_port = 6969;                    // Port zum Senden und Empfangen
 // Schräubchen zum drehen
 #define NUM_BLOCKS 2         // für interleaving
 #define FRAMES_PER_BLOCK 4   // 4 Packete ergeben einen FEC Block, für jeden Block ein XOR
-#define SAMPLES_PER_FRAME 4  // Anzahl der Abtastungen in einem Packet
+#define SAMPLES_PER_FRAME 16  // Anzahl der Abtastungen in einem Packet (max 32)
 #define SAMPLING_RATE_MS 5   // eine Abtastung
 
 #define BUFFER_SIZE (FRAMES_PER_BLOCK * NUM_BLOCKS)
@@ -50,7 +50,7 @@ struct __attribute__((packed)) Packet {
   uint8_t block_id;
   uint8_t frame_id;  // 0-3 bei DATA, 4 bei FEC
   uint32_t timestamp;
-  uint8_t signal;
+  uint32_t signal;
 };
 
 struct Block {
@@ -103,8 +103,8 @@ void setup() {
 
   udpQueue = xQueueCreate(BUFFER_SIZE, sizeof(Packet));
   sortQueue = xQueueCreate(BUFFER_SIZE, sizeof(Packet));
-  playbackQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
-  printQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint8_t));
+  playbackQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
+  printQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
 
   xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
@@ -170,7 +170,7 @@ void InputTask(void *pvParameters) {
       fec.block_id = block_id[current_block];
       fec.frame_id = FRAMES_PER_BLOCK;
       fec.timestamp = millis();
-      uint8_t xor_signal = 0;
+      uint32_t xor_signal = 0;
       for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
         xor_signal ^= blocks[current_block][i].signal;
       }
@@ -191,8 +191,8 @@ void InputTask(void *pvParameters) {
 }
 
 // samples aufnehmen
-uint8_t sampleSignal() {
-  uint8_t signal = 0;
+uint32_t sampleSignal() {
+  uint32_t signal = 0;
   for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
     signal <<= 1;
     if (digitalRead(BUTTON) == false)  // button pressed
@@ -234,7 +234,7 @@ void UdpTask(void *pvParameters) {
 void SortingTask(void *pvParameters) {
 
   Block blocks[NUM_BLOCKS];
-  uint32_t next_play_seq = 0;
+  uint8_t next_play_seq = 0;
   Packet packet;
 
   // einmal alle block ids ungültig machen
@@ -305,7 +305,7 @@ void checkBlockReady(Block *block) {
 
   // wenn rekonstruiert werden kann
   if (missing_count == 1 && fec_present) {
-    uint8_t xor_signal = block->packets[FRAMES_PER_BLOCK].signal;
+    uint32_t xor_signal = block->packets[FRAMES_PER_BLOCK].signal;
 
     for (int i = 0; i < FRAMES_PER_BLOCK; i++) {
       if (i != missing)
@@ -321,7 +321,7 @@ void checkBlockReady(Block *block) {
   // Mehr als 1 fehlt → nicht ready
 }
 
-void tryPlayback(Block blocks[], uint32_t *next_play_seq) {
+void tryPlayback(Block blocks[], uint8_t *next_play_seq) {
   while (true) {
     uint8_t expected_block = *next_play_seq / FRAMES_PER_BLOCK;
     uint8_t expected_frame = *next_play_seq % FRAMES_PER_BLOCK;
@@ -346,7 +346,7 @@ void tryPlayback(Block blocks[], uint32_t *next_play_seq) {
 }
 
 void PlaybackTask(void *pvParameters) {
-  uint8_t ring_buffer[BUFFER_SIZE];
+  uint32_t ring_buffer[BUFFER_SIZE];
   int write_index = 0;
   int read_index = 0;
   int buffered_packets = 0;
@@ -385,7 +385,7 @@ void PlaybackTask(void *pvParameters) {
 }
 
 void PrintTask(void *pvParameters) {
-  uint8_t signal;
+  uint32_t signal;
   static bool top_line[384];
   static bool bottom_line[384];
   int index = 0;
@@ -395,7 +395,7 @@ void PrintTask(void *pvParameters) {
 
   while (true) {
     if (xQueueReceive(printQueue, &signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
-      uint8_t mask = 0b00000001;
+      uint32_t mask = 1;
       for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
 
         int width_in_pixels = SAMPLING_RATE_MS / 10;  // alle 10 millisec bedeuten ein pixel druck. ohne rest
