@@ -36,8 +36,8 @@ void checkWiFi() {
       connectWiFi(ssid, password);
   if (WiFi.status() != WL_CONNECTED)
     connectWiFi(ssid2, password2);
-  //if (WiFi.status() != WL_CONNECTED)
-  //  ESP.restart();
+  if (WiFi.status() != WL_CONNECTED)
+    ESP.restart();
 }
 
 void checkPins() {
