@@ -26,20 +26,6 @@ void beepTwice() {
   digitalWrite(LED, LOW);
 }
 
-void checkWiFi() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.disconnect(true, true);
-    delay(100);
-    WiFi.mode(WIFI_STA);
-  }
-  if (WiFi.status() != WL_CONNECTED)
-    connectWiFi(ssid, password);
-  if (WiFi.status() != WL_CONNECTED)
-    connectWiFi(ssid2, password2);
-  //if (WiFi.status() != WL_CONNECTED)
-  //  ESP.restart();
-}
-
 void checkPins() {
   NO_SOUND_MODE = (digitalRead(NO_SOUND_MODE_PIN) == LOW);
   NO_PRINTER_MODE = (digitalRead(NO_PRINTER_MODE_PIN) == LOW);
@@ -52,37 +38,6 @@ void testMosfet() {
   digitalWrite(MOSFET, LOW);
   vTaskDelay(100 / portTICK_PERIOD_MS);
   digitalWrite(MOSFET, HIGH);
-}
-
-// versucht sich mit einem WLAN zu verbinden
-void connectWiFi(const char *ssid, const char *password) {
-  int connect_attempt = 0;  // verbindungs timeout
-  Serial.print("Verbinde mit ");
-  Serial.print(ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED && connect_attempt <= 5) {
-    beepOnce();
-    Serial.print(".");
-    testMosfet();  // contains 100ms pause
-    checkPins();
-    connect_attempt++;
-  }
-  Serial.println("");
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Couldn't connect!");
-    WiFi.disconnect(true, true);  //sonst kann keine neue ssid & passwd vergeben werden
-    delay(100);
-    WiFi.mode(WIFI_STA);
-  } else {
-    Serial.println("WLAN Verbunden!");
-    Serial.printf("IP-Adresse: %d.%d.%d.%d Empfang: %ddb\n", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], WiFi.RSSI());
-    beepTwice();
-    WiFi.setSleep(false);  //um hoffentlich package loss zu verhindern
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    udp.stop();
-    udp.begin(udp_port);
-    Serial.printf("Lausche und sende vermutlich nicht auf Port: %d haha\n", udp_port);
-  }
 }
 
 void playback(uint32_t *signal, bool *sound_on) {
