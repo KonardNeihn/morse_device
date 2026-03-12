@@ -2,64 +2,63 @@ import socket
 import threading
 import struct
 import time
-import json
 from flask import Flask, jsonify
 
-# ───────────── Konfiguration ─────────────
 PORT = 6969
-INACTIVITY_TIMEOUT = 60
-
-PACKET_STRUCT = struct.Struct("<BI")  # status + signal
+PACKET_STRUCT = struct.Struct("<BI")   # status + signal
+PACKET_SIZE = PACKET_STRUCT.size
 
 clients = {}
 client_stats = {}
 clients_lock = threading.Lock()
 
-# ───────────── Logging ─────────────
-def log_event(level, event, **kwargs):
 
-    entry = {
-        "timestamp": time.time(),
-        "level": level,
-        "event": event,
-        **kwargs
-    }
+# ───────────────── TCP helper ─────────────────
+def recv_exact(sock, size):
 
-    with open("morse_server.jsonl", "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    data = b''
+
+    while len(data) < size:
+
+        chunk = sock.recv(size - len(data))
+
+        if not chunk:
+            return None
+
+        data += chunk
+
+    return data
 
 
-# ───────────── Client Handler ─────────────
+# ───────────────── Client Thread ─────────────────
 def handle_client(conn, addr):
 
     print("Client connected:", addr)
 
     with clients_lock:
-        clients[conn] = {
-            "addr": addr,
-            "last_seen": time.time()
-        }
+
+        clients[conn] = addr
 
         client_stats[addr] = {
             "packets": 0,
-            "lost": 0,
-            "last_arrival": None,
             "jitter": 0,
+            "last_arrival": None,
             "rtt": None
         }
 
-    last_signal = None
+    last_ping = None
 
     try:
 
         while True:
 
-            data = conn.recv(PACKET_STRUCT.size)
+            data = recv_exact(conn, PACKET_SIZE)
 
-            if not data:
+            if data is None:
                 break
 
             status, signal = PACKET_STRUCT.unpack(data)
+
             now = time.time()
 
             with clients_lock:
@@ -67,28 +66,27 @@ def handle_client(conn, addr):
                 stats = client_stats[addr]
                 stats["packets"] += 1
 
-                # jitter berechnen
                 if stats["last_arrival"] is not None:
+
                     delta = now - stats["last_arrival"]
                     stats["jitter"] = 0.9 * stats["jitter"] + 0.1 * abs(delta)
 
                 stats["last_arrival"] = now
 
-            # ───── Server Check (Echo) ─────
+
+            # ───── server check (echo) ─────
             if status == 1:
 
                 conn.sendall(data)
 
-                # RTT schätzen
-                if last_signal is not None:
-                    rtt = now - last_signal
-                    client_stats[addr]["rtt"] = rtt
+                if last_ping is not None:
+                    client_stats[addr]["rtt"] = now - last_ping
 
-                last_signal = now
+                last_ping = now
                 continue
 
 
-            # ───── Broadcast ─────
+            # ───── broadcast ─────
             with clients_lock:
 
                 for client in list(clients.keys()):
@@ -98,9 +96,9 @@ def handle_client(conn, addr):
 
                     try:
                         client.sendall(data)
+
                     except:
                         pass
-
 
     except Exception as e:
 
@@ -108,16 +106,17 @@ def handle_client(conn, addr):
 
     finally:
 
+        print("Client disconnected:", addr)
+
         with clients_lock:
+
             if conn in clients:
                 del clients[conn]
 
         conn.close()
 
-        print("Client disconnected:", addr)
 
-
-# ───────────── Server ─────────────
+# ───────────────── TCP Server ─────────────────
 def tcp_server():
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -127,7 +126,7 @@ def tcp_server():
     server.bind(("0.0.0.0", PORT))
     server.listen()
 
-    print("TCP Morse Server running on port", PORT)
+    print("TCP Morse server running on port", PORT)
 
     while True:
 
@@ -142,7 +141,7 @@ def tcp_server():
         thread.start()
 
 
-# ───────────── Web Monitor ─────────────
+# ───────────────── Web Monitor ─────────────────
 app = Flask(__name__)
 
 @app.route("/")
@@ -151,6 +150,7 @@ def index():
     with clients_lock:
 
         return jsonify({
+
             str(addr): {
                 "packets": stats["packets"],
                 "jitter": round(stats["jitter"], 6),
@@ -166,12 +166,9 @@ def run_web():
     app.run(host="0.0.0.0", port=8080)
 
 
-# ───────────── Threads ─────────────
-t1 = threading.Thread(target=tcp_server, daemon=True)
-t2 = threading.Thread(target=run_web, daemon=True)
-
-t1.start()
-t2.start()
+# ───────────────── Start ─────────────────
+threading.Thread(target=tcp_server, daemon=True).start()
+threading.Thread(target=run_web, daemon=True).start()
 
 while True:
     time.sleep(1)
