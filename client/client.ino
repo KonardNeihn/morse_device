@@ -21,8 +21,8 @@ const char *server_address = "morse.hopto.org";  // IP des Servers
 const int port = 6969;                           // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define SAMPLES_PER_FRAME 10  // Anzahl der Abtastungen in einem Packet (max 32)
-#define SAMPLING_RATE_MS 5    // eine Abtastung
+#define SAMPLES_PER_FRAME 32  // Anzahl der Abtastungen in einem Packet (max 32)
+#define SAMPLING_RATE_MS 20    // eine Abtastung
 
 #define BUFFER_SIZE (1000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
 #define SOUND_FREQ 200
@@ -93,7 +93,8 @@ void setup() {
   playbackQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
   printQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
 
-  xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
+  xTaskCreate(CheckerTask, "Checkt Pin modes und mosfet", 4068, NULL, 1, NULL);
+  xTaskCreate(ConnectionTask, "Checkt WiFi", 4068, NULL, 1, NULL);
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
   xTaskCreate(TcpTask, "tcp Task", 4096, NULL, 1, NULL);
   xTaskCreate(PlaybackTask, "Output Task", 4096, NULL, 1, NULL);
@@ -116,7 +117,8 @@ void CheckerTask(void *pvParameters) {
     testMosfet();  // contains 100ms pause
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    Serial.printf("queues: send %d play %d print %d\n", uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+    //Serial.printf("queues (size:%d): send %d play %d print %d\n", BUFFER_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+    // Serial.print ressource stats
   }
 }
 
@@ -212,13 +214,14 @@ void ConnectionTask(void *pvParameters) {
 }
 
 void InputTask(void *pvParameters) {
-  uint32_t signal = 0;
+  uint32_t signal;
 
   while (true) {
     // nichts tun solange keine wifi oder server verbindung
-    while (state != RUNNING)
+    while (state != RUNNING && SELF_CHECK_MODE == false)
       vTaskDelay(500);
 
+    signal = 0;
     // taste einen frame ab
     for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
       signal <<= 1;
@@ -293,7 +296,7 @@ void PlaybackTask(void *pvParameters) {
     // wenn samples abgespielt gespielt werden
     if (buffering == false) {
       if (uxQueueMessagesWaiting(playbackQueue) > 0) {
-        xQueueReceive(sendQueue, &frame, 0);
+        xQueueReceive(playbackQueue, &frame, 0);
         playback(&frame, &sound_on);
       } else {
         noTone(SPEAKER);
@@ -313,13 +316,18 @@ void PrintTask(void *pvParameters) {
 
   while (true) {
     if (xQueueReceive(printQueue, &signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
+
+      // Maske vorbereiten
       uint32_t mask = 1;
+      for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++) {
+        mask <<= 1;
+      }
       for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
 
-        int width_in_pixels = SAMPLING_RATE_MS / 10;  // alle 10 millisec bedeuten ein pixel druck. ohne rest
+        int width_in_pixels = SAMPLING_RATE_MS / 20;  // alle 20 millisec bedeuten ein pixel druck. ohne rest
 
         // nichts anfangen, nichts zu drucken
-        if ((signal & mask) && something_in_it == false)
+        if ((signal & mask) == false && something_in_it == false)
           width_in_pixels = 0;
         else
           something_in_it = true;
@@ -348,7 +356,7 @@ void PrintTask(void *pvParameters) {
             }
           }
         }
-        mask <<= 1;
+        mask >>= 1;
       }
     }
   }

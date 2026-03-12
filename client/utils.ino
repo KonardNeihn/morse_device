@@ -41,18 +41,22 @@ void testMosfet() {
 }
 
 void playback(uint32_t *signal, bool *sound_on) {
-  uint32_t mask = 0b00000001;
+  uint32_t mask = 0b0000001;
+  for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++)
+    mask <<= 1;
   for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-    if ((*signal & mask) && *sound_on == false) {
-      playTone();
-      digitalWrite(LED, HIGH);
-      *sound_on = true;
+    if ((*signal & mask)) {
+      if (*sound_on == false) {
+        playTone();
+        digitalWrite(LED, HIGH);
+        *sound_on = true;
+      }
     } else {
       noTone(SPEAKER);
       digitalWrite(LED, LOW);
       *sound_on = false;
     }
-    mask <<= 1;
+    mask >>= 1;
     vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
   }
 }
