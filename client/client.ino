@@ -57,7 +57,7 @@ unsigned long last_rx = 0;
 unsigned long last_ping = 0;
 
 struct __attribute__((packed)) Packet {
-  uint8_t status;  // 0 -> normal package, 1 -> server test (send back), 2 -> ping
+  uint8_t status;  // 0 -> normal package, 1 -> server test (echo back), 2 -> ping
   uint8_t signal[FRAMES_PER_PACKET];
 };
 
@@ -229,16 +229,16 @@ void ConnectionTask(void *pvParameters) {
 
         if (millis() - last_rx > 10000) {
           hearingNothing();
-          //Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
-          last_rx = 0;
+          Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
+          //last_rx = 0;
         }
 
-        if (millis() - last_ping > 10000) {
+        /*if (millis() - last_ping > 10000) {
           Serial.println("TCP timeout");
           client.stop();
           state = TCP_CONNECT;
           break;
-        }
+        }*/
 
         handlePackets();
         break;
