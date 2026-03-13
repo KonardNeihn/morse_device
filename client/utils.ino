@@ -94,14 +94,20 @@ void handlePackets() {
   Packet outgoing;
   Packet incoming;
 
-  if (SERVER_CHECK_MODE)
-    outgoing.status = 1;
-  else
-    outgoing.status = 0;
+  outgoing.status = SERVER_CHECK_MODE ? 1 : 0;
 
-  // Packete empfangen
-  while (client.available() >= sizeof(Packet)) {
-    client.read((uint8_t *)&incoming, sizeof(Packet));
+  // =========================
+  // 1) RX IMMER ZUERST
+  // =========================
+  while (client.connected() && client.available() >= sizeof(Packet)) {
+    int n = client.read((uint8_t *)&incoming, sizeof(Packet));
+    if (n != sizeof(Packet)) {
+      Serial.printf("TCP read failed: got %d of %d bytes\n", n, sizeof(Packet));
+      client.stop();
+      state = TCP_CONNECT;
+      return;
+    }
+
     if (incoming.status == 2) {
       Serial.printf("ping\n");
       last_ping = millis();
@@ -109,7 +115,6 @@ void handlePackets() {
     }
 
     last_rx = millis();
-    //Serial.printf("rx: %s \n", signalToText(incoming.signal));
 
     if (xQueueSend(printQueue, &incoming.signal, 0) != pdPASS)
       Serial.printf("printQueue overflow!!!\n");
@@ -118,12 +123,30 @@ void handlePackets() {
       Serial.printf("playbackQueue overflow!!!\n");
   }
 
-  // Packete senden
-  if (xQueueReceive(sendQueue, &outgoing.signal, 0) == pdPASS) {
-    //Serial.printf("tx: %s \n", signalToText(outgoing.signal));
-    int written = client.write((uint8_t *)&outgoing, sizeof(Packet));
+  // =========================
+  // 2) GENAU EIN TX-VERSUCH
+  // =========================
+  if (xQueuePeek(sendQueue, &outgoing.signal, 0) == pdPASS && client.connected()) {
 
-    if (written != sizeof(Packet)) {
+    uint32_t t0 = millis();
+    int written = client.write((uint8_t *)&outgoing, sizeof(Packet));
+    uint32_t dt = millis() - t0;
+
+    if (dt > 20) {
+      Serial.printf("TX slow: %ums\n", (unsigned)dt);
+    }
+
+    /*if (dt > 200) {
+      Serial.printf("TX STALL %ums -> reconnect\n", (unsigned)dt);
+      client.stop();
+      state = TCP_CONNECT;
+      return;
+    }*/
+
+    if (written == sizeof(Packet)) {
+      // erst jetzt aus Queue entfernen
+      xQueueReceive(sendQueue, &outgoing.signal, 0);
+    } else {
       Serial.printf("TCP write failed: wrote %d of %d bytes\n", written, sizeof(Packet));
       client.stop();
       state = TCP_CONNECT;
@@ -131,6 +154,54 @@ void handlePackets() {
     }
   }
 }
+
+/*
+bool timedWrite(Packet* data) {
+  size_t len = sizeof(Packet);
+  uint32_t t0 = millis();
+  Serial.printf("[TX] write enter len=%u availForWrite=%d connected=%d\n",
+                (unsigned)len,
+                client.availableForWrite(),
+                client.connected());
+
+  size_t n = client.write((uint8_t*)data, len);
+
+  uint32_t dt = millis() - t0;
+  Serial.printf("[TX] write exit  n=%u dt=%ums availForWrite=%d connected=%d\n",
+                (unsigned)n,
+                (unsigned)dt,
+                client.availableForWrite(),
+                client.connected());
+
+  if (dt > 50) {
+    Serial.printf("!!! TX BLOCKED %ums !!!\n", (unsigned)dt);
+  }
+
+  return n == len;
+}
+
+bool timedReadPacket(Packet* pkt) {
+  uint32_t t0 = millis();
+  Serial.printf("[RX] read enter avail=%d connected=%d\n",
+                client.available(),
+                client.connected());
+
+  int n = client.read((uint8_t*)pkt, sizeof(Packet));
+
+  uint32_t dt = millis() - t0;
+  Serial.printf("[RX] read exit  n=%d dt=%ums avail=%d connected=%d\n",
+                n,
+                (unsigned)dt,
+                client.available(),
+                client.connected());
+
+  if (dt > 50) {
+    Serial.printf("!!! RX BLOCKED %ums !!!\n", (unsigned)dt);
+  }
+
+  return n == sizeof(Packet);
+}
+*/
 
 void print(bool top_line[384], bool bottom_line[384]) {
   // Reset with ESC @

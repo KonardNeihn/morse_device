@@ -21,11 +21,11 @@ const char *server_address = "morse.hopto.org";  // IP des Servers
 const int port = 6969;                           // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define SAMPLES_PER_FRAME 8  // Anzahl der Abtastungen in einem Packet (max 32)
+#define SAMPLES_PER_FRAME 32  // Anzahl der Abtastungen in einem Packet (max 32)
 #define SAMPLING_RATE_MS 15   // eine Abtastung
 
-#define QUEUE_SIZE 32
-#define BUFFER_SIZE (2000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
+#define QUEUE_SIZE 64
+#define BUFFER_SIZE (20000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
 #define SOUND_FREQ 200
 
 
@@ -119,7 +119,7 @@ void CheckerTask(void *pvParameters) {
     testMosfet();  // contains 100ms pause
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+    Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
     //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
     //char stats[512];
     //vTaskGetRunTimeStats(stats);
@@ -202,6 +202,7 @@ void ConnectionTask(void *pvParameters) {
           client.stop();
           if (client.connect(server_ip, port)) {
             client.setNoDelay(true);
+            client.setTimeout(5);  // z.B. 5ms
             last_rx = millis();
             last_ping = millis();
             state = RUNNING;
@@ -226,13 +227,13 @@ void ConnectionTask(void *pvParameters) {
           break;
         }
 
-        if (millis() - last_rx > 5000) {
+        if (millis() - last_rx > 10000) {
           hearingNothing();
-          Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
-          //last_rx = 0;
+          //Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
+          last_rx = 0;
         }
 
-        if (millis() - last_ping > 20000) {
+        if (millis() - last_ping > 10000) {
           Serial.println("TCP timeout");
           client.stop();
           state = TCP_CONNECT;
@@ -242,7 +243,7 @@ void ConnectionTask(void *pvParameters) {
         handlePackets();
         break;
     }
-    vTaskDelay(2 / portTICK_PERIOD_MS);
+    vTaskDelay(3 / portTICK_PERIOD_MS);
   }
 }
 
