@@ -107,7 +107,7 @@ def handle_client(conn, addr):
 
 def ping_thread():
     while True:
-        time.sleep(10)
+        time.sleep(1)
 
         # status = 2, signal dummy = 0
         ping_packet = PACKET.pack(2, 0)
