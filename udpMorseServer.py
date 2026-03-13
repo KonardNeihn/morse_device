@@ -1,87 +1,135 @@
+#!/usr/bin/env python3
 import asyncio
 import struct
+import time
+from collections import deque
 
-FRAMES_PER_PACKET = 8
-SERVER_PORT = 6969
+# ==============================
+# Server Konfiguration
+# ==============================
+HOST = "0.0.0.0"
+PORT = 6969
 
-# Packet format: status (1 byte) + signal (FRAMES_PER_PACKET bytes)
-PACKET_STRUCT = struct.Struct(f"!B{FRAMES_PER_PACKET}B")  # network byte order
+SIGNAL_BYTES = 8          # <-- HIER kann man ändern, wie viele Bytes pro Signal
+PACKET_SIZE = 1 + SIGNAL_BYTES  # 1 Byte Status + SignalBytes
 
-# Queues für Broadcast
-rx_queue = asyncio.Queue()
-tx_queue = asyncio.Queue()
+PING_INTERVAL = 10.0     # Sekunden
+MAX_QUEUE_PACKETS = 256
+MAX_QUEUE_BYTES = 4096
 
+# Dynamische Struct für Packets
+PACKET_STRUCT = struct.Struct(f"B{SIGNAL_BYTES}B")
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    addr = writer.get_extra_info('peername')
-    print(f"Client connected: {addr}")
+# ==============================
+# Client Management
+# ==============================
+class Client:
+    def __init__(self, reader, writer):
+        self.reader = reader
+        self.writer = writer
+        self.addr = writer.get_extra_info('peername')
+        self.tx_queue = deque()
+        self.rx_buffer = bytearray()
+        self.last_ping = time.time()
+        self.connected = True
 
+clients = set()
+
+# ==============================
+# Hilfsfunktionen
+# ==============================
+def parse_packets(buffer):
+    packets = []
+    while len(buffer) >= PACKET_SIZE:
+        pkt_bytes = buffer[:PACKET_SIZE]
+        buffer = buffer[PACKET_SIZE:]
+        pkt = PACKET_STRUCT.unpack(pkt_bytes)
+        packets.append(pkt)
+    return packets, buffer
+
+async def broadcast(packet, exclude=None):
+    for client in clients:
+        if client is exclude or not client.connected:
+            continue
+        if len(client.tx_queue) >= MAX_QUEUE_PACKETS:
+            client.tx_queue.popleft()  # drop_oldest
+        client.tx_queue.append(packet)
+
+async def handle_client(client: Client):
+    print(f"[+] client connected: {client.addr}")
     try:
-        while True:
-            # ======================
-            # 1) RX
-            # ======================
-            data = await reader.readexactly(PACKET_STRUCT.size)
-            pkt = PACKET_STRUCT.unpack(data)
-            status, signal = pkt[0], pkt[1:]
-
-            # Server Check Paket
-            if status == 1:
-                # direkt zurücksenden
-                await tx_queue.put((status, signal))
-                continue
-
-            # Ping Paket
-            if status == 2:
-                print(f"Ping received from {addr}")
-                continue
-
-            # Normales Signal
-            print(f"Received signal from {addr}: {[hex(b) for b in signal]}")
-            await rx_queue.put((status, signal))
-
-            # ======================
-            # 2) TX: Broadcast alle Pakete aus tx_queue
-            # ======================
-            while not tx_queue.empty():
-                out_status, out_signal = await tx_queue.get()
-                out_bytes = PACKET_STRUCT.pack(out_status, *out_signal)
-                try:
-                    writer.write(out_bytes)
-                    await writer.drain()
-                except Exception as e:
-                    print(f"Failed to send packet to {addr}: {e}")
-                    return
-
-    except asyncio.IncompleteReadError:
-        print(f"Client disconnected: {addr}")
+        while client.connected:
+            data = await client.reader.read(1024)
+            if not data:
+                break
+            client.rx_buffer.extend(data)
+            packets, client.rx_buffer = parse_packets(client.rx_buffer)
+            for pkt in packets:
+                status = pkt[0]
+                # Ping Paket
+                if status == 2:
+                    client.last_ping = time.time()
+                    continue
+                # Broadcast an alle anderen Clients
+                await broadcast(pkt, exclude=client)
     except Exception as e:
-        print(f"Error with client {addr}: {e}")
+        print(f"[-] client error {client.addr}: {e}")
     finally:
-        writer.close()
-        await writer.wait_closed()
+        client.connected = False
+        clients.discard(client)
+        client.writer.close()
+        await client.writer.wait_closed()
+        print(f"[-] client disconnected: {client.addr}")
 
+async def tx_loop(client: Client):
+    try:
+        while client.connected:
+            if client.tx_queue:
+                pkt = client.tx_queue.popleft()
+                try:
+                    client.writer.write(PACKET_STRUCT.pack(*pkt))
+                    await client.writer.drain()
+                except Exception as e:
+                    print(f"[-] TX error {client.addr}: {e}")
+                    client.connected = False
+                    break
+            else:
+                await asyncio.sleep(0.001)
+    except Exception as e:
+        print(f"[-] TX loop error {client.addr}: {e}")
+    finally:
+        client.connected = False
 
-async def server_loop():
-    server = await asyncio.start_server(handle_client, "0.0.0.0", SERVER_PORT)
-    print(f"Server listening on port {SERVER_PORT}")
+async def ping_check():
+    while True:
+        now = time.time()
+        for client in list(clients):
+            if not client.connected:
+                continue
+            if now - client.last_ping > PING_INTERVAL * 3:
+                print(f"[-] client timeout: {client.addr}")
+                client.connected = False
+        await asyncio.sleep(1)
+
+async def accept_clients(reader, writer):
+    client = Client(reader, writer)
+    clients.add(client)
+    await asyncio.gather(handle_client(client), tx_loop(client))
+
+# ==============================
+# Main
+# ==============================
+async def main():
+    server = await asyncio.start_server(accept_clients, HOST, PORT)
+    print(f"Listening on {HOST}:{PORT}")
+    asyncio.create_task(ping_check())
     async with server:
         await server.serve_forever()
 
-
-async def processing_loop():
-    while True:
-        status, signal = await rx_queue.get()
-        # Hier kann zusätzliche Logik für Signale eingefügt werden,
-        # z.B. Weiterverarbeitung, Logging, Broadcasting usw.
-        # Momentan senden wir einfach alles an tx_queue (Broadcast)
-        await tx_queue.put((status, signal))
-
-
-async def main():
-    # Starte Tasks
-    await asyncio.gather(server_loop(), processing_loop())
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        for client in clients:
+            client.connected = False
