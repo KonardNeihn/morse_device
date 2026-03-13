@@ -67,9 +67,7 @@ async def handle_client(client: Client):
             for pkt in packets:
                 status = pkt[0]
                 # Ping Paket
-                if status == 2:
-                    client.last_ping = time.time()
-                    continue
+                client.last_ping = time.time()
                 # Broadcast an alle anderen Clients
                 await broadcast(pkt, exclude=client)
     except Exception as e:

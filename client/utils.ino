@@ -113,11 +113,11 @@ void handlePackets() {
       return;
     }
 
-    if (incoming.status == 2) {
+    /*if (incoming.status == 2) {
       Serial.printf("ping\n");
       last_ping = millis();
       continue;
-    }
+    }*/
 
     last_rx = millis();
 

@@ -128,6 +128,8 @@ void CheckerTask(void *pvParameters) {
 
 void ConnectionTask(void *pvParameters) {
   int wichWiFi = 0;
+  static int lost_count = 0;
+
   while (true) {
     if (SELF_CHECK_MODE) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -221,13 +223,19 @@ void ConnectionTask(void *pvParameters) {
           break;
         }
 
-        if (client.connected() == false) {
-          Serial.println("TCP lost");
-          state = TCP_CONNECT;
-          break;
+        static int lost_count = 0;
+        if (!client.connected()) {
+          lost_count++;
+          if (lost_count > 3) {  // 3 mal hintereinander
+            Serial.println("TCP lost, reconnecting...");
+            state = TCP_CONNECT;
+            lost_count = 0;
+          }
+        } else {
+          lost_count = 0;
         }
 
-        if (millis() - last_rx > 10000) {
+        if (millis() - last_rx > 5000) {
           hearingNothing();
           Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
           //last_rx = 0;
