@@ -21,11 +21,11 @@ const char *server_address = "morse.hopto.org";  // IP des Servers
 const int port = 6969;                           // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define SAMPLES_PER_FRAME 32  // Anzahl der Abtastungen in einem Packet (max 32)
-#define SAMPLING_RATE_MS 15   // eine Abtastung
+#define FRAMES_PER_PACKET 8  // Anzahl der bytes in einem Packet (jedes byte 8 abtastungen)
+#define SAMPLING_RATE_MS 15  // eine Abtastung alle x ms
 
 #define QUEUE_SIZE 64
-#define BUFFER_SIZE (20000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
+#define BUFFER_SIZE (20000 / (SAMPLING_RATE_MS * FRAMES_PER_PACKET * 8))  // so viele frames, dass man eine sekunde puffer hat
 #define SOUND_FREQ 200
 
 
@@ -58,7 +58,7 @@ unsigned long last_ping = 0;
 
 struct __attribute__((packed)) Packet {
   uint8_t status;  // 0 -> normal package, 1 -> server test (send back), 2 -> ping
-  uint32_t signal;
+  uint8_t signal[FRAMES_PER_PACKET];
 };
 
 //bool BUTTON_PRESSED = false;  // muss öfter gecheckt werdem, darum lieber im sample send task
@@ -86,15 +86,14 @@ void setup() {
   pinMode(SELF_CHECK_MODE_PIN, INPUT);
   pinMode(SERVER_CHECK_MODE_PIN, INPUT);
   pinMode(RICK_ROLL_MODE_PIN, INPUT);
-  pinMode(BUTTON, INPUT_PULLUP);
 
   Serial.begin(115200);
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
-  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
-  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
+  sendQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
+  playbackQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
+  printQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
 
   xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(InputTask, "Input Task", 4096, NULL, 1, NULL, 1);
@@ -134,7 +133,7 @@ void ConnectionTask(void *pvParameters) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
       continue;
     }
-    
+
     switch (state) {
 
       case WIFI_CONNECT:
@@ -149,14 +148,15 @@ void ConnectionTask(void *pvParameters) {
         WiFi.mode(WIFI_OFF);
         vTaskDelay(100 / portTICK_PERIOD_MS);
         WiFi.mode(WIFI_STA);
+
+        WiFi.setSleep(false);
+        esp_wifi_set_ps(WIFI_PS_NONE);
         if (wichWiFi == 0)
           WiFi.begin(ssid, password);
         else
           WiFi.begin(ssid2, password2);
 
         if (WiFi.waitForConnectResult() == WL_CONNECTED) {
-          WiFi.setSleep(false);
-          esp_wifi_set_ps(WIFI_PS_NONE);
           state = DNS_RESOLVE;
           Serial.println("WiFi OK");
         } else {
@@ -202,7 +202,7 @@ void ConnectionTask(void *pvParameters) {
           client.stop();
           if (client.connect(server_ip, port)) {
             client.setNoDelay(true);
-            client.setTimeout(5);  // z.B. 5ms
+            //client.setTimeout(5);  // z.B. 5ms
             last_rx = millis();
             last_ping = millis();
             state = RUNNING;
@@ -248,38 +248,42 @@ void ConnectionTask(void *pvParameters) {
 }
 
 void InputTask(void *pvParameters) {
-  uint32_t signal;
+  uint8_t signal[FRAMES_PER_PACKET];
 
   while (true) {
     // nichts tun solange keine wifi oder server verbindung
     while (state != RUNNING && SELF_CHECK_MODE == false)
       vTaskDelay(500);
 
-    signal = 0;
-    // taste einen frame ab
-    for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-      signal <<= 1;
-      if (digitalRead(BUTTON) == false)  // button pressed
-        signal++;
-      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+    for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+      // taste einen frame ab
+      signal[i] = 0;
+      for (int j = 0; j < 8; j++) {
+        signal[i] <<= 1;
+        if (digitalRead(BUTTON) == false)  // button pressed
+          signal[i]++;
+        vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+      }
     }
+
+
 
     // sende den Frame
     if (SELF_CHECK_MODE) {
-      if (xQueueSend(printQueue, &signal, 0) != pdPASS)
+      if (xQueueSend(printQueue, signal, 0) != pdPASS)
         Serial.printf("printQueue overflow!!!\n");
-      if (xQueueSend(playbackQueue, &signal, 0) != pdPASS)
+      if (xQueueSend(playbackQueue, signal, 0) != pdPASS)
         Serial.printf("playbackQueue overflow!!!\n");
 
     } else {
-      if (xQueueSend(sendQueue, &signal, 0) != pdPASS)
+      if (xQueueSend(sendQueue, signal, 0) != pdPASS)
         Serial.printf("sendQueue overflow!!!\n");
     }
   }
 }
 
 void PlaybackTask(void *pvParameters) {
-  uint32_t frame;
+  uint8_t signal[FRAMES_PER_PACKET];
   bool buffering = true;
   bool sound_on = false;
 
@@ -295,8 +299,8 @@ void PlaybackTask(void *pvParameters) {
 
     // wenn samples abgespielt gespielt werden
     if (buffering == false) {
-      if (xQueueReceive(playbackQueue, &frame, 0) == pdPASS) {
-        playback(&frame, &sound_on);
+      if (xQueueReceive(playbackQueue, signal, 0) == pdPASS) {
+        playback(signal, &sound_on);
       } else {
         noTone(SPEAKER);
         digitalWrite(LED, LOW);
@@ -309,7 +313,7 @@ void PlaybackTask(void *pvParameters) {
 }
 
 void PrintTask(void *pvParameters) {
-  uint32_t signal;
+  uint8_t signal[FRAMES_PER_PACKET];
   static bool top_line[384];
   static bool bottom_line[384];
   int index = 0;
@@ -317,48 +321,47 @@ void PrintTask(void *pvParameters) {
   bool something_in_it = false;
 
   while (true) {
-    if (xQueueReceive(printQueue, &signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
+    if (xQueueReceive(printQueue, signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
 
-      // Maske vorbereiten
-      uint32_t mask = 1;
-      for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++) {
-        mask <<= 1;
-      }
-      for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
+      for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+        uint8_t mask = 0b10000000;
 
-        int width_in_pixels = 1;  // SAMPLING_RATE_MS / 20 einfügen für alle 20 millisec bedeuten ein pixel druck. ohne rest
+        for (int j = 0; j < 8; j++) {
 
-        // nichts anfangen, nichts zu drucken
-        if ((signal & mask) == false && something_in_it == false)
-          width_in_pixels = 0;
-        else
-          something_in_it = true;
+          int width_in_pixels = 1;  // SAMPLING_RATE_MS / 20 einfügen für alle 20 millisec bedeuten ein pixel druck. ohne rest
 
-        // erstellt und sammelt die daten für den druck
-        while (width_in_pixels > 0) {
-          //Serial.printf("%d", event.state);
-          if (writing_top_line)
-            top_line[index] = (signal & mask);
+          // nichts anfangen, nichts zu drucken
+          if ((signal[i] & mask) == false && something_in_it == false)
+            width_in_pixels = 0;
           else
-            bottom_line[index] = (signal & mask);
+            something_in_it = true;
 
-          index++;
-          width_in_pixels--;
-          if (index == 384) {
-            if (writing_top_line == true) {
-              writing_top_line = false;
-              index = 0;
-            } else {
-              if (NO_PRINTER_MODE == false)
-                print(top_line, bottom_line);
+          // erstellt und sammelt die daten für den druck
+          while (width_in_pixels > 0) {
+            //Serial.printf("%d", event.state);
+            if (writing_top_line)
+              top_line[index] = (signal[i] & mask);
+            else
+              bottom_line[index] = (signal[i] & mask);
 
-              something_in_it = false;
-              writing_top_line = true;
-              index = 0;
+            index++;
+            width_in_pixels--;
+            if (index == 384) {
+              if (writing_top_line == true) {
+                writing_top_line = false;
+                index = 0;
+              } else {
+                if (NO_PRINTER_MODE == false)
+                  print(top_line, bottom_line);
+
+                something_in_it = false;
+                writing_top_line = true;
+                index = 0;
+              }
             }
           }
+          mask >>= 1;
         }
-        mask >>= 1;
       }
     }
   }

@@ -47,19 +47,21 @@ void checkPins() {
   RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
 }
 
-char *signalToText(uint32_t signal) {
-  static char text[SAMPLES_PER_FRAME + 1];
-  uint32_t mask = 0b00000001;
-  for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++)
-    mask <<= 1;
-  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-    if (signal & mask)
-      text[i] = '1';
-    else
-      text[i] = '0';
-    mask >>= 1;
+char *signalToText(uint8_t signal[FRAMES_PER_PACKET]) {
+  static char text[(FRAMES_PER_PACKET * 8) + 1];
+  // für jedes byte
+  for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+
+    uint8_t mask = 0b10000000;
+    for (int j = 0; j < 8; j++) {
+      if (signal[i] & mask)
+        text[(i*8)+j] = '1';
+      else
+        text[(i*8)+j] = '0';
+      mask >>= 1;
+    }
   }
-  text[SAMPLES_PER_FRAME] = '\0';
+  text[FRAMES_PER_PACKET * 8] = '\0';
   return text;
 }
 
@@ -69,24 +71,27 @@ void testMosfet() {
   digitalWrite(MOSFET, HIGH);
 }
 
-void playback(uint32_t *signal, bool *sound_on) {
-  uint32_t mask = 0b0000001;
-  for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++)
-    mask <<= 1;
-  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-    if ((*signal & mask)) {
-      if (*sound_on == false) {
-        playTone();
-        digitalWrite(LED, HIGH);
-        *sound_on = true;
+void playback(uint8_t *signal, bool *sound_on) {
+  // für jedes byte
+  for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+
+    uint8_t mask = 0b10000000;
+
+    for (int j = 0; j < 8; j++) {
+      if ((signal[i] & mask)) {
+        if (*sound_on == false) {
+          playTone();
+          digitalWrite(LED, HIGH);
+          *sound_on = true;
+        }
+      } else {
+        noTone(SPEAKER);
+        digitalWrite(LED, LOW);
+        *sound_on = false;
       }
-    } else {
-      noTone(SPEAKER);
-      digitalWrite(LED, LOW);
-      *sound_on = false;
+      mask >>= 1;
+      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
     }
-    mask >>= 1;
-    vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
   }
 }
 
