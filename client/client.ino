@@ -22,9 +22,10 @@ const int port = 6969;                           // Port zum Senden und Empfange
 
 // Schräubchen zum drehen
 #define SAMPLES_PER_FRAME 32  // Anzahl der Abtastungen in einem Packet (max 32)
-#define SAMPLING_RATE_MS 20    // eine Abtastung
+#define SAMPLING_RATE_MS 15   // eine Abtastung
 
-#define BUFFER_SIZE (1000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
+#define QUEUE_SIZE 32
+#define BUFFER_SIZE (2000 / (SAMPLING_RATE_MS * SAMPLES_PER_FRAME))  // so viele frames, dass man eine sekunde puffer hat
 #define SOUND_FREQ 200
 
 
@@ -53,9 +54,10 @@ ConnectionState state = WIFI_CONNECT;
 
 IPAddress server_ip;
 unsigned long last_rx = 0;
+unsigned long last_ping = 0;
 
 struct __attribute__((packed)) Packet {
-  uint8_t status;
+  uint8_t status;  // 0 -> normal package, 1 -> server test (send back), 2 -> ping
   uint32_t signal;
 };
 
@@ -89,14 +91,13 @@ void setup() {
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  sendQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
-  playbackQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
-  printQueue = xQueueCreate(BUFFER_SIZE, sizeof(uint32_t));
+  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
+  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
+  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
 
-  xTaskCreate(CheckerTask, "Checkt Pin modes und mosfet", 4068, NULL, 1, NULL);
-  xTaskCreate(ConnectionTask, "Checkt WiFi", 4068, NULL, 1, NULL);
+  xTaskCreate(CheckerTask, "Checker Task", 4068, NULL, 1, NULL);
+  xTaskCreate(ConnectionTask, "Check WiFi TCP", 4068, NULL, 1, NULL);
   xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
-  xTaskCreate(TcpTask, "tcp Task", 4096, NULL, 1, NULL);
   xTaskCreate(PlaybackTask, "Output Task", 4096, NULL, 1, NULL);
   xTaskCreate(PrintTask, "Print Task", 4096, NULL, 1, NULL);
 
@@ -117,8 +118,11 @@ void CheckerTask(void *pvParameters) {
     testMosfet();  // contains 100ms pause
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //Serial.printf("queues (size:%d): send %d play %d print %d\n", BUFFER_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
-    // Serial.print ressource stats
+    //Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+    //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+    //char stats[512];
+    //vTaskGetRunTimeStats(stats);
+    //Serial.printf("stats: %s", stats);
   }
 }
 
@@ -128,9 +132,8 @@ void ConnectionTask(void *pvParameters) {
     switch (state) {
 
       case WIFI_CONNECT:
-        Serial.println("Connecting WiFi");
-
         Serial.printf("Connecting to ");
+        showSearchingWiFi();
         if (wichWiFi == 0)
           Serial.println(ssid);
         else
@@ -138,8 +141,7 @@ void ConnectionTask(void *pvParameters) {
 
         WiFi.disconnect(true, true);
         WiFi.mode(WIFI_OFF);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-
+        vTaskDelay(100 / portTICK_PERIOD_MS);
         WiFi.mode(WIFI_STA);
         if (wichWiFi == 0)
           WiFi.begin(ssid, password);
@@ -163,7 +165,14 @@ void ConnectionTask(void *pvParameters) {
         break;
 
       case DNS_RESOLVE:
+        if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi lost");
+          state = WIFI_CONNECT;
+          break;
+        }
+
         Serial.println("Resolving DNS");
+        showResolvingDNS();
         if (WiFi.hostByName(server_address, server_ip)) {
           Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
           state = TCP_CONNECT;
@@ -175,16 +184,26 @@ void ConnectionTask(void *pvParameters) {
         break;
 
       case TCP_CONNECT:
-        Serial.println("Connecting TCP");
-        client.stop();
-        if (client.connect(server_ip, port)) {
-          client.setNoDelay(true);
-          last_rx = millis();
-          state = RUNNING;
-          Serial.println("TCP connected");
-        } else {
-          Serial.println("TCP failed");
-          vTaskDelay(2000 / portTICK_PERIOD_MS);
+        if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi lost");
+          state = WIFI_CONNECT;
+          break;
+        }
+
+        if (state == TCP_CONNECT) {
+          Serial.println("Connecting TCP");
+          showConnectTCP();
+          client.stop();
+          if (client.connect(server_ip, port)) {
+            client.setNoDelay(true);
+            last_rx = millis();
+            last_ping = millis();
+            state = RUNNING;
+            Serial.println("TCP connected");
+          } else {
+            Serial.println("TCP failed");
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+          }
         }
         break;
 
@@ -201,15 +220,22 @@ void ConnectionTask(void *pvParameters) {
           break;
         }
 
-        if (millis() - last_rx > 15000) {
+        if (millis() - last_rx > 5000) {
+          hearingNothing();
+          Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
+        }
+
+        if (millis() - last_ping > 20000) {
           Serial.println("TCP timeout");
           client.stop();
           state = TCP_CONNECT;
           break;
         }
+
+        handlePackets();
         break;
     }
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    vTaskDelay(2 / portTICK_PERIOD_MS);
   }
 }
 
@@ -244,40 +270,6 @@ void InputTask(void *pvParameters) {
   }
 }
 
-void TcpTask(void *pvParameters) {
-  Packet outgoing;
-  Packet incoming;
-
-  while (true) {
-    // nichts tun solange keine wifi oder server verbindung
-    while (state != RUNNING)
-      vTaskDelay(500);
-
-    if (SERVER_CHECK_MODE)
-      outgoing.status = 1;
-    else
-      outgoing.status = 0;
-
-    // Packete empfangen
-    while (client.available() >= sizeof(Packet)) {
-      client.read((uint8_t *)&incoming, sizeof(Packet));
-      last_rx = millis();
-
-      if (xQueueSend(printQueue, &incoming.signal, 0) != pdPASS)
-        Serial.printf("printQueue pass!!!\n");
-
-      if (xQueueSend(playbackQueue, &incoming.signal, 0) != pdPASS)
-        Serial.printf("playbackQueue pass!!!\n");
-    }
-
-    // Packete senden
-    if (xQueueReceive(sendQueue, &outgoing.signal, 0) == pdPASS)
-      client.write((uint8_t *)&outgoing, sizeof(Packet));
-
-    vTaskDelay(5 / portTICK_PERIOD_MS);  // klein, weil chat sagt, udp buffer relativ klein (bei burst doof)
-  }
-}
-
 void PlaybackTask(void *pvParameters) {
   uint32_t frame;
   bool buffering = true;
@@ -287,7 +279,7 @@ void PlaybackTask(void *pvParameters) {
 
     // buffering status ändern oder warten
     if (buffering) {
-      if (uxQueueMessagesWaiting(playbackQueue) > BUFFER_SIZE / 2)
+      if (uxQueueMessagesWaiting(playbackQueue) > BUFFER_SIZE)
         buffering = false;
       else
         vTaskDelay(5 / portTICK_PERIOD_MS);
@@ -300,7 +292,10 @@ void PlaybackTask(void *pvParameters) {
         playback(&frame, &sound_on);
       } else {
         noTone(SPEAKER);
+        digitalWrite(LED, LOW);
         buffering = true;
+        sound_on = false;
+        Serial.printf("RAN OUT OF BUFFER!!!\n");
       }
     }
   }
@@ -324,7 +319,7 @@ void PrintTask(void *pvParameters) {
       }
       for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
 
-        int width_in_pixels = SAMPLING_RATE_MS / 20;  // alle 20 millisec bedeuten ein pixel druck. ohne rest
+        int width_in_pixels = 1;  // SAMPLING_RATE_MS / 20 einfügen für alle 20 millisec bedeuten ein pixel druck. ohne rest
 
         // nichts anfangen, nichts zu drucken
         if ((signal & mask) == false && something_in_it == false)

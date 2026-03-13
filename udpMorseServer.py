@@ -1,6 +1,7 @@
 import socket
 import threading
 import struct
+import time
 
 PORT = 6969
 PACKET = struct.Struct("<BI")
@@ -44,10 +45,12 @@ def handle_client(conn):
 
             status, signal = PACKET.unpack(data)
 
+            # server test → echo zurück
             if status == 1:
                 conn.sendall(data)
                 continue
 
+            # an alle anderen clients weiterleiten
             with lock:
                 for c in clients:
                     if c != conn:
@@ -67,6 +70,28 @@ def handle_client(conn):
         conn.close()
 
 
+def ping_loop():
+
+    packet = PACKET.pack(2, 0)
+
+    while True:
+
+        time.sleep(10)
+
+        with lock:
+            dead = []
+
+            for c in clients:
+                try:
+                    c.sendall(packet)
+                except:
+                    dead.append(c)
+
+            for c in dead:
+                if c in clients:
+                    clients.remove(c)
+
+
 def main():
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -74,6 +99,9 @@ def main():
     server.listen()
 
     print("Server running on port", PORT)
+
+    # Ping thread starten
+    threading.Thread(target=ping_loop, daemon=True).start()
 
     while True:
 

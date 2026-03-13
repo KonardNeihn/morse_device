@@ -1,29 +1,42 @@
+void showSearchingWiFi() {
+  for (int i = 0; i < 1; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+void showResolvingDNS() {
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+void showConnectTCP() {
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+void hearingNothing() {
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
 void playTone() {
   if (!NO_SOUND_MODE)           // nur wenn der drehschalter nicht "ohne Ton" sagt (LOW = angeschaltet)
     tone(SPEAKER, SOUND_FREQ);  // tone() blockiert auf dem esp32 den thread NICHT
-}
-
-void beepOnce() {
-  playTone();
-  digitalWrite(LED, HIGH);
-  vTaskDelay(150 / portTICK_PERIOD_MS);
-  noTone(SPEAKER);
-  digitalWrite(LED, LOW);
-  vTaskDelay(850 / portTICK_PERIOD_MS);
-}
-
-void beepTwice() {
-  playTone();
-  digitalWrite(LED, HIGH);
-  vTaskDelay(100 / portTICK_PERIOD_MS);
-  noTone(SPEAKER);
-  digitalWrite(LED, LOW);
-  vTaskDelay(200 / portTICK_PERIOD_MS);
-  playTone();
-  digitalWrite(LED, HIGH);
-  vTaskDelay(100 / portTICK_PERIOD_MS);
-  noTone(SPEAKER);
-  digitalWrite(LED, LOW);
 }
 
 void checkPins() {
@@ -32,6 +45,22 @@ void checkPins() {
   SELF_CHECK_MODE = (digitalRead(SELF_CHECK_MODE_PIN) == LOW);
   SERVER_CHECK_MODE = (digitalRead(SERVER_CHECK_MODE_PIN) == LOW);
   RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
+}
+
+char *signalToText(uint32_t signal) {
+  static char text[SAMPLES_PER_FRAME + 1];
+  uint32_t mask = 0b00000001;
+  for (int i = 0; i < SAMPLES_PER_FRAME - 1; i++)
+    mask <<= 1;
+  for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
+    if (signal & mask)
+      text[i] = '1';
+    else
+      text[i] = '0';
+    mask >>= 1;
+  }
+  text[SAMPLES_PER_FRAME] = '\0';
+  return text;
 }
 
 void testMosfet() {
@@ -58,6 +87,40 @@ void playback(uint32_t *signal, bool *sound_on) {
     }
     mask >>= 1;
     vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+  }
+}
+
+void handlePackets() {
+  Packet outgoing;
+  Packet incoming;
+
+  if (SERVER_CHECK_MODE)
+    outgoing.status = 1;
+  else
+    outgoing.status = 0;
+
+  // Packete empfangen
+  while (client.available() >= sizeof(Packet)) {
+    client.read((uint8_t *)&incoming, sizeof(Packet));
+    last_rx = millis();
+    //Serial.printf("rx: %s \n", signalToText(incoming.signal));
+    if (incoming.status == 2) {
+      Serial.printf("ping\n");
+      last_ping = millis();
+      continue;
+    }
+
+    if (xQueueSend(printQueue, &incoming.signal, 0) != pdPASS)
+      Serial.printf("printQueue pass!!!\n");
+
+    if (xQueueSend(playbackQueue, &incoming.signal, 0) != pdPASS)
+      Serial.printf("playbackQueue pass!!!\n");
+  }
+
+  // Packete senden
+  if (xQueueReceive(sendQueue, &outgoing.signal, 0) == pdPASS) {
+    client.write((uint8_t *)&outgoing, sizeof(Packet));
+    //Serial.printf("tx: %s \n", signalToText(outgoing.signal));
   }
 }
 
