@@ -4,114 +4,156 @@ import struct
 import time
 
 PORT = 6969
+
+# Packet: uint8 status + uint32 signal = 5 bytes
 PACKET = struct.Struct("<BI")
-SIZE = PACKET.size
+SIZE = PACKET.size  # should be 5
 
 clients = []
 lock = threading.Lock()
 
 
 def recv_exact(sock, size):
-
     data = b''
-
     while len(data) < size:
-
-        chunk = sock.recv(size - len(data))
+        try:
+            chunk = sock.recv(size - len(data))
+        except socket.timeout:
+            continue
+        except Exception:
+            return None
 
         if not chunk:
             return None
 
         data += chunk
-
     return data
 
 
-def handle_client(conn):
+def remove_client(conn):
+    with lock:
+        if conn in clients:
+            clients.remove(conn)
 
-    print("Client connected")
+    try:
+        conn.close()
+    except:
+        pass
+
+
+def safe_send(conn, data):
+    try:
+        conn.sendall(data)
+        return True
+    except Exception:
+        return False
+
+
+def broadcast(data, exclude=None):
+    dead = []
+
+    with lock:
+        current_clients = list(clients)
+
+    for c in current_clients:
+        if c == exclude:
+            continue
+
+        if not safe_send(c, data):
+            dead.append(c)
+
+    for c in dead:
+        print("Removing dead client during broadcast")
+        remove_client(c)
+
+
+def handle_client(conn, addr):
+    print(f"Client connected: {addr}")
+
+    # Important: disable Nagle on this connection
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    # Prevent recv from blocking forever
+    conn.settimeout(1.0)
 
     with lock:
         clients.append(conn)
 
     try:
-
         while True:
-
             data = recv_exact(conn, SIZE)
-
             if data is None:
                 break
 
-            status, signal = PACKET.unpack(data)
+            try:
+                status, signal = PACKET.unpack(data)
+            except Exception:
+                print(f"Bad packet from {addr}")
+                break
 
-            # server test → echo zurück
+            # status = 1 -> echo back only to sender
             if status == 1:
-                conn.sendall(data)
+                if not safe_send(conn, data):
+                    break
                 continue
 
-            # an alle anderen clients weiterleiten
-            with lock:
-                for c in clients:
-                    if c != conn:
-                        try:
-                            c.sendall(data)
-                        except:
-                            pass
+            # status = 0 (normal) or anything else -> broadcast to others
+            broadcast(data, exclude=conn)
 
     finally:
-
-        print("Client disconnected")
-
-        with lock:
-            if conn in clients:
-                clients.remove(conn)
-
-        conn.close()
+        print(f"Client disconnected: {addr}")
+        remove_client(conn)
 
 
-def ping_loop():
-
-    packet = PACKET.pack(2, 0)
-
+def ping_thread():
     while True:
-
         time.sleep(10)
 
+        # status = 2, signal dummy = 0
+        ping_packet = PACKET.pack(2, 0)
+
         with lock:
-            dead = []
+            current_clients = list(clients)
 
-            for c in clients:
-                try:
-                    c.sendall(packet)
-                except:
-                    dead.append(c)
+        if current_clients:
+            print(f"Sending ping to {len(current_clients)} clients")
 
-            for c in dead:
-                if c in clients:
-                    clients.remove(c)
+        dead = []
+        for c in current_clients:
+            if not safe_send(c, ping_packet):
+                dead.append(c)
+
+        for c in dead:
+            print("Removing dead client during ping")
+            remove_client(c)
 
 
 def main():
-
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    # Optional but useful for quick restart after crash
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    # Not super important on listening socket, but harmless
+    server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
     server.bind(("0.0.0.0", PORT))
     server.listen()
 
-    print("Server running on port", PORT)
+    print(f"Server running on port {PORT} (packet size = {SIZE} bytes)")
 
-    # Ping thread starten
-    threading.Thread(target=ping_loop, daemon=True).start()
+    # Start ping thread
+    threading.Thread(target=ping_thread, daemon=True).start()
 
     while True:
-
         conn, addr = server.accept()
 
         threading.Thread(
             target=handle_client,
-            args=(conn,),
+            args=(conn, addr),
             daemon=True
         ).start()
 
 
-main()
+if __name__ == "__main__":
+    main()

@@ -102,25 +102,33 @@ void handlePackets() {
   // Packete empfangen
   while (client.available() >= sizeof(Packet)) {
     client.read((uint8_t *)&incoming, sizeof(Packet));
-    last_rx = millis();
-    //Serial.printf("rx: %s \n", signalToText(incoming.signal));
     if (incoming.status == 2) {
       Serial.printf("ping\n");
       last_ping = millis();
       continue;
     }
 
+    last_rx = millis();
+    //Serial.printf("rx: %s \n", signalToText(incoming.signal));
+
     if (xQueueSend(printQueue, &incoming.signal, 0) != pdPASS)
-      Serial.printf("printQueue pass!!!\n");
+      Serial.printf("printQueue overflow!!!\n");
 
     if (xQueueSend(playbackQueue, &incoming.signal, 0) != pdPASS)
-      Serial.printf("playbackQueue pass!!!\n");
+      Serial.printf("playbackQueue overflow!!!\n");
   }
 
   // Packete senden
   if (xQueueReceive(sendQueue, &outgoing.signal, 0) == pdPASS) {
-    client.write((uint8_t *)&outgoing, sizeof(Packet));
     //Serial.printf("tx: %s \n", signalToText(outgoing.signal));
+    int written = client.write((uint8_t *)&outgoing, sizeof(Packet));
+
+    if (written != sizeof(Packet)) {
+      Serial.printf("TCP write failed: wrote %d of %d bytes\n", written, sizeof(Packet));
+      client.stop();
+      state = TCP_CONNECT;
+      return;
+    }
   }
 }
 
@@ -137,15 +145,6 @@ void print(bool top_line[384], bool bottom_line[384]) {
   printer.write(255);  // n2   → Länge Heizzeit (hoch -> langsam, aber dunkler)          evtl bringt 255 nicht so viel,
   printer.write(255);  // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
   vTaskDelay(1);
-
-  // ESC 3 Line spacing auf 0 setzen
-  //printer.write(27);
-  //printer.write('3');
-  //printer.write(0);
-
-  // Fett
-  //printer.write(27);
-  //printer.write(69);
 
   // Größe des Bildes
   printer.write(27);

@@ -21,7 +21,7 @@ const char *server_address = "morse.hopto.org";  // IP des Servers
 const int port = 6969;                           // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define SAMPLES_PER_FRAME 32  // Anzahl der Abtastungen in einem Packet (max 32)
+#define SAMPLES_PER_FRAME 8  // Anzahl der Abtastungen in einem Packet (max 32)
 #define SAMPLING_RATE_MS 15   // eine Abtastung
 
 #define QUEUE_SIZE 32
@@ -78,14 +78,15 @@ HardwareSerial printer(2);  // use UART2 (GPIO17 TX, GPIO16 RX)
 void setup() {
   pinMode(SPEAKER, OUTPUT);
   pinMode(LED, OUTPUT);
-  pinMode(BUTTON, INPUT);
   pinMode(MOSFET, OUTPUT);
+  pinMode(BUTTON, INPUT);
   pinMode(NORMAL_MODE_PIN, INPUT);
   pinMode(NO_SOUND_MODE_PIN, INPUT);
   pinMode(NO_PRINTER_MODE_PIN, INPUT);
   pinMode(SELF_CHECK_MODE_PIN, INPUT);
   pinMode(SERVER_CHECK_MODE_PIN, INPUT);
   pinMode(RICK_ROLL_MODE_PIN, INPUT);
+  pinMode(BUTTON, INPUT_PULLUP);
 
   Serial.begin(115200);
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
@@ -95,11 +96,11 @@ void setup() {
   playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
   printQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
 
-  xTaskCreate(CheckerTask, "Checker Task", 4068, NULL, 1, NULL);
-  xTaskCreate(ConnectionTask, "Check WiFi TCP", 4068, NULL, 1, NULL);
-  xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
-  xTaskCreate(PlaybackTask, "Output Task", 4096, NULL, 1, NULL);
-  xTaskCreate(PrintTask, "Print Task", 4096, NULL, 1, NULL);
+  xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(InputTask, "Input Task", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(PlaybackTask, "Output Task", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(CheckerTask, "Checker Task", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(PrintTask, "Print Task", 4096, NULL, 2, NULL, 1);
 
   //vTaskDelete(NULL);  // Beendet den Arduino-Loop-Task
 }
@@ -129,6 +130,11 @@ void CheckerTask(void *pvParameters) {
 void ConnectionTask(void *pvParameters) {
   int wichWiFi = 0;
   while (true) {
+    if (SELF_CHECK_MODE) {
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+      continue;
+    }
+    
     switch (state) {
 
       case WIFI_CONNECT:
@@ -223,6 +229,7 @@ void ConnectionTask(void *pvParameters) {
         if (millis() - last_rx > 5000) {
           hearingNothing();
           Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
+          //last_rx = 0;
         }
 
         if (millis() - last_ping > 20000) {
@@ -259,13 +266,13 @@ void InputTask(void *pvParameters) {
     // sende den Frame
     if (SELF_CHECK_MODE) {
       if (xQueueSend(printQueue, &signal, 0) != pdPASS)
-        Serial.printf("printQueue pass!!!\n");
+        Serial.printf("printQueue overflow!!!\n");
       if (xQueueSend(playbackQueue, &signal, 0) != pdPASS)
-        Serial.printf("playbackQueue pass!!!\n");
+        Serial.printf("playbackQueue overflow!!!\n");
 
     } else {
       if (xQueueSend(sendQueue, &signal, 0) != pdPASS)
-        Serial.printf("sendQueue pass!!!\n");
+        Serial.printf("sendQueue overflow!!!\n");
     }
   }
 }
@@ -287,8 +294,7 @@ void PlaybackTask(void *pvParameters) {
 
     // wenn samples abgespielt gespielt werden
     if (buffering == false) {
-      if (uxQueueMessagesWaiting(playbackQueue) > 0) {
-        xQueueReceive(playbackQueue, &frame, 0);
+      if (xQueueReceive(playbackQueue, &frame, 0) == pdPASS) {
         playback(&frame, &sound_on);
       } else {
         noTone(SPEAKER);
