@@ -1,0 +1,247 @@
+
+17:06:55.845 -> queues (size:32): send 0 play 21 print 0
+17:06:56.072 -> ping
+17:06:56.946 -> queues (size:32): send 0 play 21 print 0
+17:06:57.074 -> ping
+17:06:58.043 -> queues (size:32): send 0 play 19 print 0
+17:06:59.141 -> queues (size:32): send 4 play 10 print 0
+17:07:00.239 -> queues (size:32): send 13 play 1 print 0
+17:07:00.433 -> RAN OUT OF BUFFER!!!
+17:07:01.337 -> queues (size:32): send 22 play 0 print 0
+17:07:02.432 -> queues (size:32): send 31 play 0 print 0
+17:07:02.594 -> sendQueue overflow!!!
+17:07:02.691 -> sendQueue overflow!!!
+17:07:02.821 -> sendQueue overflow!!!
+17:07:02.951 -> sendQueue overflow!!!
+17:07:03.079 -> sendQueue overflow!!!
+17:07:03.177 -> sendQueue overflow!!!
+17:07:03.307 -> sendQueue overflow!!!
+17:07:03.436 -> sendQueue overflow!!!
+17:07:03.533 -> queues (size:32): send 32 play 0 print 0
+17:07:03.533 -> sendQueue overflow!!!
+17:07:03.662 -> sendQueue overflow!!!
+17:07:03.793 -> sendQueue overflow!!!
+17:07:03.889 -> sendQueue overflow!!!
+17:07:04.017 -> sendQueue overflow!!!
+17:07:04.147 -> sendQueue overflow!!!
+17:07:04.277 -> sendQueue overflow!!!
+17:07:04.375 -> sendQueue overflow!!!
+17:07:04.504 -> sendQueue overflow!!!
+17:07:04.634 -> sendQueue overflow!!!
+17:07:04.634 -> queues (size:32): send 32 play 0 print 0
+17:07:04.731 -> sendQueue overflow!!!
+17:07:04.860 -> sendQueue overflow!!!
+17:07:04.989 -> sendQueue overflow!!!
+17:07:05.118 -> sendQueue overflow!!!
+17:07:05.216 -> sendQueue overflow!!!
+17:07:05.349 -> sendQueue overflow!!!
+17:07:05.477 -> sendQueue overflow!!!
+17:07:05.575 -> sendQueue overflow!!!
+17:07:05.704 -> sendQueue overflow!!!
+17:07:05.737 -> queues (size:32): send 32 play 0 print 0
+17:07:05.834 -> sendQueue overflow!!!
+17:07:05.931 -> sendQueue overflow!!!
+17:07:06.061 -> sendQueue overflow!!!
+17:07:06.190 -> sendQueue overflow!!!
+17:07:06.320 -> sendQueue overflow!!!
+17:07:06.417 -> sendQueue overflow!!!
+17:07:06.546 -> sendQueue overflow!!!
+17:07:06.675 -> sendQueue overflow!!!
+17:07:06.772 -> sendQueue overflow!!!
+17:07:06.836 -> queues (size:32): send 32 play 0 print 0
+17:07:06.901 -> sendQueue overflow!!!
+17:07:07.030 -> sendQueue overflow!!!
+17:07:07.159 -> sendQueue overflow!!!
+17:07:07.256 -> sendQueue overflow!!!
+17:07:07.386 -> sendQueue overflow!!!
+17:07:07.515 -> sendQueue overflow!!!
+17:07:07.612 -> sendQueue overflow!!!
+17:07:07.741 -> sendQueue overflow!!!
+17:07:07.871 -> sendQueue overflow!!!
+17:07:07.936 -> queues (size:32): send 32 play 0 print 0
+17:07:07.969 -> sendQueue overflow!!!
+17:07:08.100 -> sendQueue overflow!!!
+17:07:08.230 -> sendQueue overflow!!!
+17:07:08.359 -> sendQueue overflow!!!
+17:07:08.456 -> sendQueue overflow!!!
+17:07:08.584 -> sendQueue overflow!!!
+17:07:08.714 -> sendQueue overflow!!!
+17:07:08.811 -> sendQueue overflow!!!
+17:07:08.939 -> hearing nothing for 11s
+17:07:08.939 -> ping
+17:07:08.939 -> ping
+17:07:08.939 -> ping
+17:07:08.939 -> ping
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> ping
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> ping
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> ping
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.939 -> sendQueue overflow!!!
+17:07:08.939 -> ping
+17:07:08.939 -> playbackQueue overflow!!!
+17:07:08.971 -> ping
+17:07:08.971 -> playbackQueue overflow!!!
+17:07:08.971 -> ping
+17:07:08.971 -> playbackQueue overflow!!!
+17:07:08.971 -> playbackQueue overflow!!!
+17:07:08.971 -> ping
+17:07:08.971 -> playbackQueue overflow!!!
+17:07:08.971 -> playbackQueue overflow!!!
+17:07:09.037 -> queues (size:32): send 9 play 32 print 0
+17:07:09.391 -> playbackQueue overflow!!!
+17:07:09.391 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.422 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.454 -> playbackQueue overflow!!!
+17:07:09.486 -> playbackQueue overflow!!!
+17:07:09.486 -> playbackQueue overflow!!!
+17:07:09.486 -> ping
+17:07:09.486 -> playbackQueue overflow!!!
+17:07:09.486 -> playbackQueue overflow!!!
+17:07:09.486 -> playbackQueue overflow!!!
+17:07:09.519 -> playbackQueue overflow!!!
+17:07:10.072 -> ping
+17:07:10.136 -> queues (size:32): send 0 play 31 print 0
+17:07:11.079 -> ping
+17:07:11.240 -> queues (size:32): send 0 play 31 print 0
+17:07:12.080 -> ping
+17:07:12.338 -> queues (size:32): send 0 play 31 print 0
+17:07:13.085 -> ping
+17:07:13.438 -> queues (size:32): send 0 play 31 print 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+17:41:06.570 -> ping
+17:41:06.570 -> [RX] read enter avail=5 connected=1
+17:41:06.570 -> [RX] read exit  n=5 dt=0ms avail=0 connected=1
+17:41:06.634 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:06.634 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:06.699 -> [RX] read enter avail=5 connected=1
+17:41:06.699 -> [RX] read exit  n=5 dt=1ms avail=0 connected=1
+17:41:06.730 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:06.730 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:06.827 -> [RX] read enter avail=5 connected=1
+17:41:06.827 -> [RX] read exit  n=5 dt=1ms avail=0 connected=1
+17:41:06.860 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:06.860 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:06.989 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:06.989 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:07.086 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:07.118 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:07.215 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:07.215 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:07.344 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:07.344 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:07.473 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:07.473 -> [TX] write exit  n=5 dt=2ms availForWrite=0 connected=1
+17:41:07.473 -> queues (size:32): send 0 play 11 print 0
+17:41:07.570 -> [TX] write enter len=5 availForWrite=0 connected=1
+17:41:08.572 -> queues (size:32): send 8 play 2 print 0
+17:41:08.863 -> RAN OUT OF BUFFER!!!
+17:41:09.672 -> queues (size:32): send 17 play 0 print 0
+17:41:10.772 -> queues (size:32): send 26 play 0 print 0
+17:41:10.869 -> [TX] write exit  n=5 dt=3293ms availForWrite=0 connected=1
+17:41:10.869 -> !!! TX BLOCKED 3293ms !!!
+17:41:10.869 -> [RX] read enter avail=110 connected=1
+17:41:10.869 -> [RX] read exit  n=5 dt=1ms avail=105 connected=1
+17:41:10.901 -> [RX] read enter avail=110 connected=1
+17:41:10.901 -> [RX] read exit  n=5 dt=0ms avail=105 connected=1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
