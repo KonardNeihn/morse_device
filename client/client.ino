@@ -6,7 +6,6 @@
  */
 
 #include <WiFi.h>
-#include <WiFiUdp.h>
 #include <HardwareSerial.h>
 #include <esp_wifi.h>
 
@@ -17,18 +16,17 @@ const char *ssid2 = "Leibniz' Hotspot";
 const char *password2 = "";
 
 
-// UDP-Konfiguration
-const char *udp_address = "morse.hopto.org";  // IP des Servers
-const int udp_port = 6969;                    // Port zum Senden und Empfangen
+// Server-Konfiguration
+const char *server_address = "morse.hopto.org";  // IP des Servers
+const int port = 6969;                           // Port zum Senden und Empfangen
 
 // Schräubchen zum drehen
-#define WINDOW_SIZE 16
-#define LOSS_THRESHOLD_PKS 8
-#define LOSS_THRESHOLD_MS 500
-#define TARGET_RING_BUFFER_MS 1000
-#define RING_BUFFER_SIZE 32
-#define SOUND_FREQ 200
+#define FRAMES_PER_PACKET 8  // Anzahl der bytes in einem Packet (jedes byte 8 abtastungen)
+#define SAMPLING_RATE_MS 15  // eine Abtastung alle x ms
 
+#define QUEUE_SIZE 64
+#define BUFFER_SIZE (20000 / (SAMPLING_RATE_MS * FRAMES_PER_PACKET * 8))  // so viele frames, dass man eine sekunde puffer hat
+#define SOUND_FREQ 200
 
 
 
@@ -45,21 +43,22 @@ const int udp_port = 6969;                    // Port zum Senden und Empfangen
 #define SERVER_CHECK_MODE_PIN 32
 #define RICK_ROLL_MODE_PIN 35
 
-struct __attribute__((packed)) MorseEvent {
-  uint8_t seq;
-  uint16_t duration_ms;
-  bool state;  // 1 = Ton, 0 = Pause
+enum ConnectionState {
+  WIFI_CONNECT,
+  DNS_RESOLVE,
+  TCP_CONNECT,
+  RUNNING
 };
 
-struct __attribute__((packed)) UdpPacket {
-  uint8_t session;
-  MorseEvent current_event;
-  MorseEvent recent_event;
-};
+ConnectionState state = WIFI_CONNECT;
 
-struct WindowSlot {
-  bool valid;
-  MorseEvent event;
+IPAddress server_ip;
+unsigned long last_rx = 0;
+unsigned long last_ping = 0;
+
+struct __attribute__((packed)) Packet {
+  uint8_t status;  // 0 -> normal package, 1 -> server test (echo back), 2 -> ping
+  uint8_t signal[FRAMES_PER_PACKET];
 };
 
 //bool BUTTON_PRESSED = false;  // muss öfter gecheckt werdem, darum lieber im sample send task
@@ -69,19 +68,18 @@ volatile bool SELF_CHECK_MODE = false;
 volatile bool SERVER_CHECK_MODE = false;
 volatile bool RICK_ROLL_MODE = false;
 
-QueueHandle_t udpQueue;       // Kommunikationsschnittstelle von InputTask -> udpTask
-QueueHandle_t sortQueue;      // Kommunikationschnittstelle von udpTask -> sortTask
+QueueHandle_t sendQueue;      // Kommunikationsschnittstelle von InputTask -> tcpTask
 QueueHandle_t playbackQueue;  // Kommunikationsschnittstelle von sortingTask -> outputTask
 QueueHandle_t printQueue;     // Kommunikationsschnittstelle von sortingTask -> printTask
 
-WiFiUDP udp;
+WiFiClient client;
 HardwareSerial printer(2);  // use UART2 (GPIO17 TX, GPIO16 RX)
 
 void setup() {
   pinMode(SPEAKER, OUTPUT);
   pinMode(LED, OUTPUT);
-  pinMode(BUTTON, INPUT);
   pinMode(MOSFET, OUTPUT);
+  pinMode(BUTTON, INPUT);
   pinMode(NORMAL_MODE_PIN, INPUT);
   pinMode(NO_SOUND_MODE_PIN, INPUT);
   pinMode(NO_PRINTER_MODE_PIN, INPUT);
@@ -93,17 +91,15 @@ void setup() {
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  udpQueue = xQueueCreate(32, sizeof(UdpPacket));
-  sortQueue = xQueueCreate(32, sizeof(UdpPacket));
-  playbackQueue = xQueueCreate(32, sizeof(MorseEvent));
-  printQueue = xQueueCreate(32, sizeof(MorseEvent));
+  sendQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
+  playbackQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
+  printQueue = xQueueCreate(QUEUE_SIZE, FRAMES_PER_PACKET * sizeof(uint8_t));
 
-  xTaskCreate(CheckerTask, "Checkt WiFi und Pin modes", 4068, NULL, 1, NULL);
-  xTaskCreate(InputTask, "Input Task", 4096, NULL, 1, NULL);
-  xTaskCreate(UdpTask, "udp Task", 4096, NULL, 1, NULL);
-  xTaskCreate(SortingTask, "Sorting Task", 4096, NULL, 1, NULL);
-  xTaskCreate(PlaybackTask, "Output Task", 4096, NULL, 1, NULL);
-  xTaskCreate(PrintTask, "Print Task", 4096, NULL, 1, NULL);
+  xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(InputTask, "Input Task", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(PlaybackTask, "Output Task", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(CheckerTask, "Checker Task", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(PrintTask, "Print Task", 4096, NULL, 2, NULL, 1);
 
   //vTaskDelete(NULL);  // Beendet den Arduino-Loop-Task
 }
@@ -119,179 +115,213 @@ void loop() {
  */
 void CheckerTask(void *pvParameters) {
   while (true) {
-    testMosfet(); // contains 100ms pause
+    testMosfet();  // contains 100ms pause
     checkPins();
-    checkWiFi();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+    //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+    //char stats[512];
+    //vTaskGetRunTimeStats(stats);
+    //Serial.printf("stats: %s", stats);
+  }
+}
+
+void ConnectionTask(void *pvParameters) {
+  int wichWiFi = 0;
+  static int lost_count = 0;
+
+  while (true) {
+    if (SELF_CHECK_MODE) {
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+      continue;
+    }
+
+    switch (state) {
+
+      case WIFI_CONNECT:
+        Serial.printf("Connecting to ");
+        showSearchingWiFi();
+        if (wichWiFi == 0)
+          Serial.println(ssid);
+        else
+          Serial.println(ssid2);
+
+        WiFi.disconnect(true, true);
+        WiFi.mode(WIFI_OFF);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        WiFi.mode(WIFI_STA);
+
+        WiFi.setSleep(false);
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        if (wichWiFi == 0)
+          WiFi.begin(ssid, password);
+        else
+          WiFi.begin(ssid2, password2);
+
+        if (WiFi.waitForConnectResult() == WL_CONNECTED) {
+          state = DNS_RESOLVE;
+          Serial.println("WiFi OK");
+        } else {
+          Serial.println("WiFi failed");
+          if (wichWiFi == 0)
+            wichWiFi = 1;
+          else
+            wichWiFi = 0;
+          vTaskDelay(2000 / portTICK_PERIOD_MS);
+        }
+
+        break;
+
+      case DNS_RESOLVE:
+        if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi lost");
+          state = WIFI_CONNECT;
+          break;
+        }
+
+        Serial.println("Resolving DNS");
+        showResolvingDNS();
+        if (WiFi.hostByName(server_address, server_ip)) {
+          Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
+          state = TCP_CONNECT;
+        } else {
+          Serial.println("DNS failed");
+          state = WIFI_CONNECT;
+        }
+
+        break;
+
+      case TCP_CONNECT:
+        if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi lost");
+          state = WIFI_CONNECT;
+          break;
+        }
+
+        if (state == TCP_CONNECT) {
+          Serial.println("Connecting TCP");
+          showConnectTCP();
+          client.stop();
+          if (client.connect(server_ip, port)) {
+            client.setNoDelay(true);
+            //client.setTimeout(5);  // z.B. 5ms
+            last_rx = millis();
+            last_ping = millis();
+            state = RUNNING;
+            Serial.println("TCP connected");
+          } else {
+            Serial.println("TCP failed");
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+          }
+        }
+        break;
+
+      case RUNNING:
+        if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi lost");
+          state = WIFI_CONNECT;
+          break;
+        }
+
+        static int lost_count = 0;
+        if (!client.connected()) {
+          lost_count++;
+          if (lost_count > 3) {  // 3 mal hintereinander
+            Serial.println("TCP lost, reconnecting...");
+            state = TCP_CONNECT;
+            lost_count = 0;
+          }
+        } else {
+          lost_count = 0;
+        }
+
+        if (millis() - last_rx > 5000) {
+          hearingNothing();
+          Serial.printf("hearing nothing for %ds\n", (millis() - last_rx) / 1000);
+          //last_rx = 0;
+        }
+
+        /*if (millis() - last_ping > 10000) {
+          Serial.println("TCP timeout");
+          client.stop();
+          state = TCP_CONNECT;
+          break;
+        }*/
+
+        handlePackets();
+        break;
+    }
+    vTaskDelay(3 / portTICK_PERIOD_MS);
   }
 }
 
 void InputTask(void *pvParameters) {
-  MorseEvent current_event;
-  MorseEvent recent_event;
-  UdpPacket packet;
-  bool current_state = false;
-  bool recent_state = false;
-  uint8_t session = esp_random() & 0xFF;
-  uint8_t seq = 4;
-  uint16_t duration_ms;
-  unsigned long recent_ms = millis();
+  uint8_t signal[FRAMES_PER_PACKET];
 
   while (true) {
-    current_state = !digitalRead(BUTTON);
-    duration_ms = millis() - recent_ms;
-    if (current_state != recent_state || duration_ms >= 200) {
-      recent_event = current_event;  // memcpy
-      current_event.duration_ms = duration_ms;
-      current_event.state = recent_state;  // für das gerade beendete event
-      current_event.seq = seq;
-      packet.session = session;
-      packet.current_event = current_event;
-      packet.recent_event = recent_event;
-      if (xQueueSend(udpQueue, &packet, 0) != pdPASS) {
-        Serial.printf("udpSendQueue pass!!!\n");
-      }
-      recent_state = current_state;
-      recent_ms = millis();
-      seq++;
-    }
-    vTaskDelay(5 / portTICK_PERIOD_MS);  // andere lösung? jetzt ist duration_ms nugenutzter speicher, weil nur in 5er schritten auftritt, aber schnellstes tippen ist 50ms lang
-  }
-}
+    // nichts tun solange keine wifi oder server verbindung
+    while (state != RUNNING && SELF_CHECK_MODE == false)
+      vTaskDelay(500);
 
-void UdpTask(void *pvParameters) {
-  UdpPacket outgoing;
-  UdpPacket incoming;
-
-  while (true) {
-    if (WiFi.status() == WL_CONNECTED) {
-      // Packete empfangen
-      int packet_size = udp.parsePacket();
-      if (packet_size >= sizeof(UdpPacket)) {
-        udp.read((uint8_t *)&incoming, sizeof(UdpPacket));
-        Serial.printf("received sess:%d seq:%d dur:%d stat:%d \n", incoming.session, incoming.current_event.seq, incoming.current_event.duration_ms, incoming.current_event.state);
-        if (xQueueSend(sortQueue, &incoming, 0) != pdPASS) {
-          Serial.printf("sortQueue pass!!!\n");
-        }
-      }
-      // Packete senden
-      if (xQueueReceive(udpQueue, &outgoing, 0) == pdPASS) {
-        if (SERVER_CHECK_MODE || SELF_CHECK_MODE) {
-          outgoing.session = 0;
-        }
-        if (SELF_CHECK_MODE)
-          udp.beginPacket("127.0.0.1", udp_port);  // 127.0.0.1 ist man selber im wlan modul
-        else
-          udp.beginPacket(udp_address, udp_port);
-        udp.write((uint8_t *)&outgoing, sizeof(UdpPacket));
-        udp.endPacket();
-      }
-    }
-    vTaskDelay(1 / portTICK_PERIOD_MS);   // klein, weil chat sagt, udp buffer relativ klein (bei burst doof)
-  }
-}
-
-void SortingTask(void *pvParameters) {
-  UdpPacket packet;
-  // stuff for sorting
-  WindowSlot sliding_window[WINDOW_SIZE];
-  memset(sliding_window, 0, sizeof(sliding_window));
-  uint8_t expected_seq = 0;
-  uint8_t expected_session = esp_random() & 0xFF;
-
-  // stuff for managing loss
-  uint8_t highest_seq_seen = 0;
-  unsigned long last_time_sent = millis();
-
-  while (true) {
-    // einsortieren
-    if (xQueueReceive(sortQueue, &packet, 0) == pdPASS) {
-      // im self- oder server check mode sollen fremde packete ignoriert werden
-      if ((SELF_CHECK_MODE || SERVER_CHECK_MODE) && packet.session != 0)
-        continue;
-      
-      // session wechsel
-      if (packet.session != expected_session) {
-        Serial.printf("Session changed!\n");
-        expected_session = packet.session;
-        expected_seq = packet.current_event.seq;
-        highest_seq_seen = expected_seq;
-      }
-      // recent package
-      int8_t pos = (int8_t)(packet.recent_event.seq - expected_seq);  // neg = zu alt, pos = zu früh, 0 = expected
-      if (pos >= WINDOW_SIZE) {
-        Serial.printf("way to early package: +%d \n", pos);
-      } else if (pos >= 0) {
-        sliding_window[pos].event = packet.recent_event;
-        sliding_window[pos].valid = true;
-      }
-      // current package
-      pos = packet.current_event.seq - expected_seq;  // neg = zu alt, pos = zu früh, 0 = expected
-      if ((int8_t)(packet.current_event.seq - highest_seq_seen) > 0) {
-        highest_seq_seen = packet.current_event.seq;
-      }
-      if (pos >= WINDOW_SIZE) {
-        Serial.printf("way to early package: +%d \n", pos);
-      } else if (pos >= 0) {
-        sliding_window[pos].event = packet.current_event;
-        sliding_window[pos].valid = true;
+    for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+      // taste einen frame ab
+      signal[i] = 0;
+      for (int j = 0; j < 8; j++) {
+        signal[i] <<= 1;
+        if (digitalRead(BUTTON) == false)  // button pressed
+          signal[i]++;
+        vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
       }
     }
 
-    // übergeben ggf loss managen
-    if (sliding_window[0].valid) {
-      send_and_shift_window(&sliding_window[0]);
-      expected_seq++;
-      last_time_sent = millis();
-    } else if ((int8_t)(highest_seq_seen - expected_seq) >= LOSS_THRESHOLD_PKS) {
-      Serial.printf("highest: %d \n", (highest_seq_seen - expected_seq));
-      sliding_window[0].event.duration_ms = 10;
-      sliding_window[0].event.state = false;
-      sliding_window[0].event.seq = expected_seq;
-      send_and_shift_window(&sliding_window[0]);
-      expected_seq++;
+
+
+    // sende den Frame
+    if (SELF_CHECK_MODE) {
+      if (xQueueSend(printQueue, signal, 0) != pdPASS)
+        Serial.printf("printQueue overflow!!!\n");
+      if (xQueueSend(playbackQueue, signal, 0) != pdPASS)
+        Serial.printf("playbackQueue overflow!!!\n");
+
+    } else {
+      if (xQueueSend(sendQueue, signal, 0) != pdPASS)
+        Serial.printf("sendQueue overflow!!!\n");
     }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
 
 void PlaybackTask(void *pvParameters) {
-  MorseEvent ring_buffer[RING_BUFFER_SIZE];
-  int write_index = 0;
-  int read_index = 0;
-  int buffered_packets = 0;
-  int buffered_ms = 0;
+  uint8_t signal[FRAMES_PER_PACKET];
   bool buffering = true;
   bool sound_on = false;
+
   while (true) {
-    while (buffered_packets < RING_BUFFER_SIZE && xQueueReceive(playbackQueue, &ring_buffer[write_index], 0) == pdPASS) {
-      buffered_ms += ring_buffer[write_index].duration_ms;
-      buffered_packets++;
-      write_index = (write_index + 1) % RING_BUFFER_SIZE;
-    }
+
+    // buffering status ändern oder warten
     if (buffering) {
-      if (buffered_ms > TARGET_RING_BUFFER_MS || buffered_packets == RING_BUFFER_SIZE) {
+      if (uxQueueMessagesWaiting(playbackQueue) > BUFFER_SIZE)
         buffering = false;
-      } else {
+      else
         vTaskDelay(5 / portTICK_PERIOD_MS);
-      }
     }
+
+    // wenn samples abgespielt gespielt werden
     if (buffering == false) {
-      if (buffered_packets > 0) {
-        playback(&ring_buffer[read_index], &sound_on);
-        buffered_ms -= ring_buffer[read_index].duration_ms;
-        buffered_packets--;
-        read_index = (read_index + 1) % RING_BUFFER_SIZE;
+      if (xQueueReceive(playbackQueue, signal, 0) == pdPASS) {
+        playback(signal, &sound_on);
       } else {
         noTone(SPEAKER);
+        digitalWrite(LED, LOW);
         buffering = true;
+        sound_on = false;
+        Serial.printf("RAN OUT OF BUFFER!!!\n");
       }
     }
   }
 }
 
 void PrintTask(void *pvParameters) {
-  MorseEvent event;
+  uint8_t signal[FRAMES_PER_PACKET];
   static bool top_line[384];
   static bool bottom_line[384];
   int index = 0;
@@ -299,38 +329,46 @@ void PrintTask(void *pvParameters) {
   bool something_in_it = false;
 
   while (true) {
-    if (xQueueReceive(printQueue, &event, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
-      int width_in_pixels = event.duration_ms / 10;                    // alle 10 millisec bedeuten ein pixel druck. ohne rest
+    if (xQueueReceive(printQueue, signal, portMAX_DELAY) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
 
-      // nichts anfangen, nichts zu drucken
-      if (event.state == false && something_in_it == false) {
-        width_in_pixels = 0;
-      } else {
-        something_in_it = true;
-      }
+      for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+        uint8_t mask = 0b10000000;
 
-      // erstellt und sammelt die daten für den druck
-      while (width_in_pixels > 0) {
-        //Serial.printf("%d", event.state);
-        if (writing_top_line) {
-          top_line[index] = event.state;
-        } else {
-          bottom_line[index] = event.state;
-        }
-        index++;
-        width_in_pixels--;
-        if (index == 384) {
-          if (writing_top_line == true) {
-            writing_top_line = false;
-            index = 0;
-          } else {
-            if (NO_PRINTER_MODE == false) {
-              print(top_line, bottom_line);
+        for (int j = 0; j < 8; j++) {
+
+          int width_in_pixels = 1;  // SAMPLING_RATE_MS / 20 einfügen für alle 20 millisec bedeuten ein pixel druck. ohne rest
+
+          // nichts anfangen, nichts zu drucken
+          if ((signal[i] & mask) == false && something_in_it == false)
+            width_in_pixels = 0;
+          else
+            something_in_it = true;
+
+          // erstellt und sammelt die daten für den druck
+          while (width_in_pixels > 0) {
+            //Serial.printf("%d", event.state);
+            if (writing_top_line)
+              top_line[index] = (signal[i] & mask);
+            else
+              bottom_line[index] = (signal[i] & mask);
+
+            index++;
+            width_in_pixels--;
+            if (index == 384) {
+              if (writing_top_line == true) {
+                writing_top_line = false;
+                index = 0;
+              } else {
+                if (NO_PRINTER_MODE == false)
+                  print(top_line, bottom_line);
+
+                something_in_it = false;
+                writing_top_line = true;
+                index = 0;
+              }
             }
-            something_in_it = false;
-            writing_top_line = true;
-            index = 0;
           }
+          mask >>= 1;
         }
       }
     }

@@ -1,156 +1,133 @@
-import socket
-import threading
-import queue
-import time
+#!/usr/bin/env python3
+import asyncio
 import struct
-import json
-from flask import Flask, jsonify
+import time
+from collections import deque
 
-INACTIVITY_TIMEOUT = 3600
-RECEIVE_PORT = 6969
+# ==============================
+# Server Konfiguration
+# ==============================
+HOST = "0.0.0.0"
+PORT = 6969
 
-PACKET_STRUCT = struct.Struct("<B B H B B H B")
+SIGNAL_BYTES = 8          # <-- HIER kann man ändern, wie viele Bytes pro Signal
+PACKET_SIZE = 1 + SIGNAL_BYTES  # 1 Byte Status + SignalBytes
 
-messages = queue.Queue()
-clients = {}
-last_seq = {}
-client_stats = {}
-clients_lock = threading.Lock()
+PING_INTERVAL = 10.0     # Sekunden
+MAX_QUEUE_PACKETS = 256
+MAX_QUEUE_BYTES = 4096
 
-# ─────────────────────────────
-# JSON Logging
-# ─────────────────────────────
+# Dynamische Struct für Packets
+PACKET_STRUCT = struct.Struct(f"B{SIGNAL_BYTES}B")
 
-def log_event(level, event, **kwargs):
-    entry = {
-        "timestamp": time.time(),
-        "level": level,
-        "event": event,
-        **kwargs
-    }
-    with open("morse_server.jsonl", "a") as f:
-        f.write(json.dumps(entry) + "\n")
+# ==============================
+# Client Management
+# ==============================
+class Client:
+    def __init__(self, reader, writer):
+        self.reader = reader
+        self.writer = writer
+        self.addr = writer.get_extra_info('peername')
+        self.tx_queue = deque()
+        self.rx_buffer = bytearray()
+        self.last_ping = time.time()
+        self.connected = True
 
-# ─────────────────────────────
-# Auto IP Bind
-# ─────────────────────────────
+clients = set()
 
-server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server.bind(("0.0.0.0", RECEIVE_PORT))
+# ==============================
+# Hilfsfunktionen
+# ==============================
+def parse_packets(buffer):
+    packets = []
+    while len(buffer) >= PACKET_SIZE:
+        pkt_bytes = buffer[:PACKET_SIZE]
+        buffer = buffer[PACKET_SIZE:]
+        pkt = PACKET_STRUCT.unpack(pkt_bytes)
+        packets.append(pkt)
+    return packets, buffer
 
-print(f"Server running on UDP *:{RECEIVE_PORT}")
-log_event("INFO", "server_start", port=RECEIVE_PORT)
-
-# ─────────────────────────────
-
-def receive():
-    while True:
-        message, address = server.recvfrom(64)
-
-        now = time.time()
-
-        if len(message) != PACKET_STRUCT.size:
-            log_event("WARN", "invalid_packet", client=str(address))
+async def broadcast(packet, exclude=None):
+    for client in clients:
+        if client is exclude or not client.connected:
             continue
+        if len(client.tx_queue) >= MAX_QUEUE_PACKETS:
+            client.tx_queue.popleft()  # drop_oldest
+        client.tx_queue.append(packet)
 
-        messages.put((message, address, now))
+async def handle_client(client: Client):
+    print(f"[+] client connected: {client.addr}")
+    try:
+        while client.connected:
+            data = await client.reader.read(1024)
+            if not data:
+                break
+            client.rx_buffer.extend(data)
+            packets, client.rx_buffer = parse_packets(client.rx_buffer)
+            for pkt in packets:
+                status = pkt[0]
+                # Ping Paket
+                client.last_ping = time.time()
+                # Broadcast an alle anderen Clients
+                await broadcast(pkt, exclude=client)
+    except Exception as e:
+        print(f"[-] client error {client.addr}: {e}")
+    finally:
+        client.connected = False
+        clients.discard(client)
+        client.writer.close()
+        await client.writer.wait_closed()
+        print(f"[-] client disconnected: {client.addr}")
 
-        with clients_lock:
-            if address not in clients:
-                log_event("INFO", "client_registered", client=str(address))
-                client_stats[address] = {
-                    "packets": 0,
-                    "lost": 0,
-                    "last_arrival": None,
-                    "jitter": 0,
-                }
+async def tx_loop(client: Client):
+    try:
+        while client.connected:
+            if client.tx_queue:
+                pkt = client.tx_queue.popleft()
+                try:
+                    client.writer.write(PACKET_STRUCT.pack(*pkt))
+                    await client.writer.drain()
+                except Exception as e:
+                    print(f"[-] TX error {client.addr}: {e}")
+                    client.connected = False
+                    break
+            else:
+                await asyncio.sleep(0.001)
+    except Exception as e:
+        print(f"[-] TX loop error {client.addr}: {e}")
+    finally:
+        client.connected = False
 
-            clients[address] = now
-
-
-def broadcast():
+async def ping_check():
     while True:
-        message, from_address, arrival_time = messages.get()
+        now = time.time()
+        for client in list(clients):
+            if not client.connected:
+                continue
+            if now - client.last_ping > PING_INTERVAL * 3:
+                print(f"[-] client timeout: {client.addr}")
+                client.connected = False
+        await asyncio.sleep(1)
 
-        (
-            session,
-            cur_seq, cur_duration, cur_state,
-            rec_seq, rec_duration, rec_state
-        ) = PACKET_STRUCT.unpack(message)
+async def accept_clients(reader, writer):
+    client = Client(reader, writer)
+    clients.add(client)
+    await asyncio.gather(handle_client(client), tx_loop(client))
 
-        with clients_lock:
+# ==============================
+# Main
+# ==============================
+async def main():
+    server = await asyncio.start_server(accept_clients, HOST, PORT)
+    print(f"Listening on {HOST}:{PORT}")
+    asyncio.create_task(ping_check())
+    async with server:
+        await server.serve_forever()
 
-            stats = client_stats[from_address]
-            stats["packets"] += 1
-
-            # ───── Packet Loss ─────
-            if from_address in last_seq:
-                expected = (last_seq[from_address] + 1) & 0xFF
-                if cur_seq != expected:
-                    lost = (cur_seq - expected) & 0xFF
-                    stats["lost"] += lost
-                    log_event("WARN", "packet_loss",
-                              client=str(from_address),
-                              lost=lost)
-
-            last_seq[from_address] = cur_seq
-
-            # ───── Jitter ─────
-            if stats["last_arrival"] is not None:
-                delta = arrival_time - stats["last_arrival"]
-                stats["jitter"] = 0.9 * stats["jitter"] + 0.1 * abs(delta)
-
-            stats["last_arrival"] = arrival_time
-
-            # ───── Broadcast ─────
-            for client in list(clients.keys()):
-
-                if time.time() - clients[client] > INACTIVITY_TIMEOUT:
-                    log_event("INFO", "client_timeout",
-                              client=str(client))
-                    del clients[client]
-                    continue
-
-                if session == 0:
-                    if client == from_address:
-                        server.sendto(message, client)
-                    continue
-
-                if client != from_address:
-                    server.sendto(message, client)
-
-# ─────────────────────────────
-# Web Monitor
-# ─────────────────────────────
-
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    with clients_lock:
-        return jsonify({
-            "clients": {
-                str(addr): {
-                    "packets": stats["packets"],
-                    "lost": stats["lost"],
-                    "jitter": round(stats["jitter"], 6)
-                }
-                for addr, stats in client_stats.items()
-            }
-        })
-
-def run_web():
-    app.run(host="0.0.0.0", port=8080)
-
-# ─────────────────────────────
-
-t1 = threading.Thread(target=receive, daemon=True)
-t2 = threading.Thread(target=broadcast, daemon=True)
-t3 = threading.Thread(target=run_web, daemon=True)
-
-t1.start()
-t2.start()
-t3.start()
-
-while True:
-    time.sleep(1)
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        for client in clients:
+            client.connected = False
