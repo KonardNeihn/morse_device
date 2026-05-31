@@ -23,7 +23,6 @@ void showConnectTCP() {
     digitalWrite(LED, LOW);
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
-}
 
 void hearingNothing() {
   for (int i = 0; i < 4; i++) {
