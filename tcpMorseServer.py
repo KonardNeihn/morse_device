@@ -92,7 +92,7 @@ class Clienthandler:
                 if message is None:
                     break
 
-                self.client_socket.send(message.encode()) #message.encode()
+                self.client_socket.send(message) #message.encode()
             except:
                 print(f"Error while sending: {e} with: {self.client_address}")
 
