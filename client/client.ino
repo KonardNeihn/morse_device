@@ -10,22 +10,22 @@
 #include <esp_wifi.h>
 
 // WLAN-Zugangsdaten
-const char *ssid = "WGlan";
-const char *password = "51565735623896715310";
-const char *ssid2 = "Leibniz' Hotspot";
-const char *password2 = "";
+const char *ssid2 = "WGlan";
+const char *password2 = "51565735623896715310";
+const char *ssid = "LestMehrBuchen!";
+const char *password = "fluessigesHelium-268,8)";
 
 
 // Server-Konfiguration
 const char *server_address = "morse.hopto.org";  // IP des Servers
-const int port = 6969;                           // Port zum Senden und Empfangen
+const int port = 6969;                           // Port des Servers Senden
 
 // Schräubchen zum drehen
-#define FRAMES_PER_PACKET 8  // Anzahl der bytes in einem Packet (jedes byte 8 abtastungen)
+#define FRAMES_PER_PACKET 4  // Anzahl der bytes in einem Packet (jedes byte 8 abtastungen)
 #define SAMPLING_RATE_MS 15  // eine Abtastung alle x ms
 
 #define QUEUE_SIZE 64
-#define BUFFER_SIZE (20000 / (SAMPLING_RATE_MS * FRAMES_PER_PACKET * 8))  // so viele frames, dass man eine sekunde puffer hat
+#define BUFFER_SIZE (1000 / (SAMPLING_RATE_MS * FRAMES_PER_PACKET * 8))  // so viele frames, dass man x milliseks puffer hat
 #define SOUND_FREQ 200
 
 
@@ -79,7 +79,7 @@ void setup() {
   pinMode(SPEAKER, OUTPUT);
   pinMode(LED, OUTPUT);
   pinMode(MOSFET, OUTPUT);
-  pinMode(BUTTON, INPUT);
+  pinMode(BUTTON, INPUT_PULLUP);
   pinMode(NORMAL_MODE_PIN, INPUT);
   pinMode(NO_SOUND_MODE_PIN, INPUT);
   pinMode(NO_PRINTER_MODE_PIN, INPUT);
