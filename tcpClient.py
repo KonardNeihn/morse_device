@@ -1,7 +1,7 @@
 import socket
 import threading
 
-TCP_IP = "127.0.1.1"   # lokal testen
+TCP_IP = "0.0.0.0"
 TCP_PORT = 6969
 
 

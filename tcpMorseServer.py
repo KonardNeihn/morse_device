@@ -17,7 +17,7 @@ clients_lock = threading.Lock()
 
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((TCP_IP, TCP_PORT))
+    server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
 
     print(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}")
@@ -25,6 +25,7 @@ def main():
     while True:
         try:
             client_socket, client_address = server.accept()
+            client_socket.setblocking(False)
         
             client = Clienthandler(client_socket, client_address)
 
@@ -63,7 +64,7 @@ class Clienthandler:
                 if not data:
                     break
 
-                message = data.decode()
+                message = data #data.decode()
                 print(f"Received: {message} from: {self.client_address}")
 
                 broadcast(message, self)
@@ -91,7 +92,7 @@ class Clienthandler:
                 if message is None:
                     break
 
-                self.client_socket.send(message.encode())
+                self.client_socket.send(message.encode()) #message.encode()
             except:
                 print(f"Error while sending: {e} with: {self.client_address}")
 
