@@ -5,7 +5,7 @@ import queue
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
 TCP_PORT = 6969
-BUFFER_SIZE = 64
+BUFFER_SIZE = 5
 
 
 clients = []
@@ -25,7 +25,7 @@ def main():
     while True:
         try:
             client_socket, client_address = server.accept()
-            client_socket.setblocking(False)
+            client_socket.setblocking(True)
         
             client = Clienthandler(client_socket, client_address)
 
@@ -57,8 +57,8 @@ class Clienthandler:
 
     def receive_loop (self):
         print(f"new client: {self.client_address}")
-        try:
-            while True:
+        while True:
+            try:
                 data = self.client_socket.recv(BUFFER_SIZE)
 
                 if not data:
@@ -69,16 +69,16 @@ class Clienthandler:
 
                 broadcast(message, self)
         
-        except Exception as e:
-            print(f"Error while receiving: {e} with: {self.client_address}")
+            except Exception as e:
+                print(f"Error while receiving: {e} with: {self.client_address}")
 
-        finally:
-            print(f"Client disconnected: {self.client_address}")
-            self.client_socket.close()
-            self.running = False
-            self.out_queue.put(None)
-            with clients_lock:
-                clients.remove(self)
+            finally:
+                print(f"Client disconnected: {self.client_address}")
+                self.client_socket.close()
+                self.running = False
+                self.out_queue.put(None)
+                with clients_lock:
+                    clients.remove(self)
         
 
     def send (self, message):
@@ -93,7 +93,7 @@ class Clienthandler:
                     break
 
                 self.client_socket.send(message) #message.encode()
-            except:
+            except Exeption as e:
                 print(f"Error while sending: {e} with: {self.client_address}")
 
 
