@@ -1,3 +1,5 @@
+# vllt zwei tcp connections pro client - eine für empf, eine für send
+
 import socket
 import threading
 import queue
@@ -92,7 +94,7 @@ class Clienthandler:
                 if message is None:
                     break
 
-                self.client_socket.send(message) #message.encode()
+                self.client_socket.sendall(message) #message.encode()
             except Exeption as e:
                 print(f"Error while sending: {e} with: {self.client_address}")
 
