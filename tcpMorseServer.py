@@ -59,21 +59,25 @@ class Clienthandler:
         print(f"New client: {self.client_address}")
         while self.running:
             try:
-                # Zuerst status und length lesen (2 Bytes)
-                header = self.client_socket.recv(2)
-                if not header or len(header) < 2:
+                # Zuerst status und length lesen (3 Bytes)
+                header = self.client_socket.recv(3)
+                if not header or len(header) < 3:
                     print(f"Unvollständiger Header von {self.client_address}.")
                     break
 
-                status, length = struct.unpack("!BB", header)  # "!BB" = 2 unsigned bytes (Big-Endian)
+                print(list(header))
+
+                status = header[0]
+                length = (header[1] << 8) | header[2]
+
                 print(f"Empfange Paket: status={status}, length={length} von {self.client_address}")
 
                 # Dann die signal-Daten lesen (length Bytes)
 
-                #data = b""
-                #while len(data) < length:
-                #    chunk = sock.recv(length - len(data))
-                #data += chunk
+                #signal_data = b""
+                #while len(signal_data) < length:
+                #    chunk = sock.recv(length - len(signal_data))
+                #signal_data += chunk
 
                 signal_data = self.client_socket.recv(length)
                 if not signal_data or len(signal_data) < length:
@@ -107,7 +111,7 @@ class Clienthandler:
         signal_data = packet["signal"]
 
         # Paket als Bytes serialisieren
-        packet = struct.pack("!BB", status, length) + signal_data
+        packet = struct.pack("!BBB", status, length) + signal_data
         self.out_queue.put(packet)
 
     def send_loop(self):
