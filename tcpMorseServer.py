@@ -88,7 +88,6 @@ class Clienthandler:
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
-                print(f"Received packet: {packet} from: {self.client_address}")
 
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)

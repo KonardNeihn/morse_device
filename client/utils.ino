@@ -160,7 +160,6 @@ void handlePackets() {
     header[0] = status;
     header[1] = (size >> 8) & 0xFF;   // Hochwertiges Byte von size
     header[2] = size & 0xFF;          // Niedrigwertiges Byte von size
-    client.write(header, sizeof(header));
     size_t bytesSent = client.write(header, sizeof(header));
     if (bytesSent != sizeof(header)) {
       Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, sizeof(header));
