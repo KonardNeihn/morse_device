@@ -69,13 +69,19 @@ class Clienthandler:
                 print(f"Empfange Paket: status={status}, length={length} von {self.client_address}")
 
                 # Dann die signal-Daten lesen (length Bytes)
+
+                #data = b""
+                #while len(data) < length:
+                #    chunk = sock.recv(length - len(data))
+                #data += chunk
+
                 signal_data = self.client_socket.recv(length)
                 if not signal_data or len(signal_data) < length:
                     print(f"Unvollständige Payload von {self.client_address}. Erwartet: {length}, erhalten: {len(signal_data)}")
                     break
 
                 print(f"Paket erfolgreich empfangen: {signal_data}")
-                
+
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
                 print(f"Received packet: {packet} from: {self.client_address}")
@@ -86,14 +92,13 @@ class Clienthandler:
             except Exception as e:
                 print(f"Error while receiving: {e} with: {self.client_address}")
 
-            finally:
-                print(f"Client disconnected: {self.client_address}")
-                self.client_socket.close()
-                self.running = False
-                self.out_queue.put(None)
-                with clients_lock:
-                    if self in clients:
-                        clients.remove(self)
+        print(f"Client disconnected: {self.client_address}")
+        self.client_socket.close()
+        self.running = False
+        self.out_queue.put(None)
+        with clients_lock:
+            if self in clients:
+                clients.remove(self)
     
     def send(self, packet):
         # packet ist ein Dictionary: {"status": uint8, "length": uint8, "signal": bytes}
