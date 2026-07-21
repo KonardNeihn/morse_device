@@ -1,12 +1,11 @@
-# vllt zwei tcp connections pro client - eine für empf, eine für send
-
 import socket
 import threading
 import queue
+import struct
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
-TCP_PORT = 6969
+TCP_PORT = 5100
 BUFFER_SIZE = 5
 
 
@@ -56,21 +55,29 @@ class Clienthandler:
         self.send_thread = threading.Thread(target=self.send_loop)
         self.send_thread.start()
 
-
-    def receive_loop (self):
-        print(f"new client: {self.client_address}")
-        while True:
+    def receive_loop(self):
+        print(f"New client: {self.client_address}")
+        while self.running:
             try:
-                data = self.client_socket.recv(BUFFER_SIZE)
-
-                if not data:
+                # Zuerst status und length lesen (2 Bytes)
+                header = self.client_socket.recv(2)
+                if not header or len(header) < 2:
                     break
 
-                message = data #data.decode()
-                print(f"Received: {message} from: {self.client_address}")
+                status, length = struct.unpack("!BB", header)  # "!BB" = 2 unsigned bytes (Big-Endian)
 
-                broadcast(message, self)
-        
+                # Dann die signal-Daten lesen (length Bytes)
+                signal_data = self.client_socket.recv(length)
+                if not signal_data or len(signal_data) < length:
+                    break
+
+                # Paket zusammenbauen (status, length, signal_data)
+                packet = {"status": status, "length": length, "signal": signal_data}
+                print(f"Received packet: {packet} from: {self.client_address}")
+
+                # Paket an alle anderen Clients weiterleiten
+                broadcast(packet, self)
+
             except Exception as e:
                 print(f"Error while receiving: {e} with: {self.client_address}")
 
@@ -80,22 +87,27 @@ class Clienthandler:
                 self.running = False
                 self.out_queue.put(None)
                 with clients_lock:
-                    clients.remove(self)
-        
+                    if self in clients:
+                        clients.remove(self)
+    
+    def send(self, packet):
+        # packet ist ein Dictionary: {"status": uint8, "length": uint8, "signal": bytes}
+        status = packet["status"]
+        length = packet["length"]
+        signal_data = packet["signal"]
 
-    def send (self, message):
-        self.out_queue.put(message)
+        # Paket als Bytes serialisieren
+        packet = struct.pack("!BB", status, length) + signal_data
+        self.out_queue.put(packet)
 
     def send_loop(self):
         while self.running:
             try:
-                message = self.out_queue.get()
-
-                if message is None:
+                packet = self.out_queue.get()
+                if packet is None:
                     break
-
-                self.client_socket.sendall(message) #message.encode()
-            except Exeption as e:
+                self.client_socket.sendall(packet)
+            except Exception as e:
                 print(f"Error while sending: {e} with: {self.client_address}")
 
 
