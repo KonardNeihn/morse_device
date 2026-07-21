@@ -62,15 +62,20 @@ class Clienthandler:
                 # Zuerst status und length lesen (2 Bytes)
                 header = self.client_socket.recv(2)
                 if not header or len(header) < 2:
+                    print(f"Unvollständiger Header von {self.client_address}.")
                     break
 
                 status, length = struct.unpack("!BB", header)  # "!BB" = 2 unsigned bytes (Big-Endian)
+                print(f"Empfange Paket: status={status}, length={length} von {self.client_address}")
 
                 # Dann die signal-Daten lesen (length Bytes)
                 signal_data = self.client_socket.recv(length)
                 if not signal_data or len(signal_data) < length:
+                    print(f"Unvollständige Payload von {self.client_address}. Erwartet: {length}, erhalten: {len(signal_data)}")
                     break
 
+                print(f"Paket erfolgreich empfangen: {signal_data}")
+                
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
                 print(f"Received packet: {packet} from: {self.client_address}")
