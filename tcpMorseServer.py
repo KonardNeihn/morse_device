@@ -111,7 +111,7 @@ class Clienthandler:
         signal_data = packet["signal"]
 
         # Paket als Bytes serialisieren
-        packet = struct.pack("!BBB", status, length) + signal_data
+        packet = struct.pack("!BH", status, length) + signal_data
         self.out_queue.put(packet)
 
     def send_loop(self):

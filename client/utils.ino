@@ -23,6 +23,7 @@ void showConnectTCP() {
     digitalWrite(LED, LOW);
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
+}
 
 void hearingNothing() {
   for (int i = 0; i < 4; i++) {
@@ -46,21 +47,18 @@ void checkPins() {
   RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
 }
 
-char *signalToText(uint8_t signal[FRAMES_PER_PACKET]) {
-  static char text[(FRAMES_PER_PACKET * 8) + 1];
-  // für jedes byte
-  for (int i = 0; i < FRAMES_PER_PACKET; i++) {
+char *signalToText(uint8_t signal) {
+  static char text[9];
+  uint8_t mask = 0b10000000;
 
-    uint8_t mask = 0b10000000;
-    for (int j = 0; j < 8; j++) {
-      if (signal[i] & mask)
-        text[(i*8)+j] = '1';
-      else
-        text[(i*8)+j] = '0';
-      mask >>= 1;
-    }
+  for (int j = 0; j < 8; j++) {
+    if (signal & mask)
+      text[j] = '1';
+    else
+      text[j] = '0';
+    mask >>= 1;
   }
-  text[FRAMES_PER_PACKET * 8] = '\0';
+  text[8] = '\0';
   return text;
 }
 
@@ -70,142 +68,128 @@ void testMosfet() {
   digitalWrite(MOSFET, HIGH);
 }
 
-void playback(uint8_t *signal, bool *sound_on) {
-  // für jedes byte
-  for (int i = 0; i < FRAMES_PER_PACKET; i++) {
-
-    uint8_t mask = 0b10000000;
-
-    for (int j = 0; j < 8; j++) {
-      if ((signal[i] & mask)) {
-        if (*sound_on == false) {
-          playTone();
-          digitalWrite(LED, HIGH);
-          *sound_on = true;
-        }
-      } else {
-        noTone(SPEAKER);
-        digitalWrite(LED, LOW);
-        *sound_on = false;
-      }
-      mask >>= 1;
-      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
-    }
-  }
-}
-
 void handlePackets() {
-  Packet outgoing;
-  Packet incoming;
 
-  outgoing.status = SERVER_CHECK_MODE ? 1 : 0;
+  if (!client.connected()) {
+    Serial.println("VERBINDUNG ABGEBROCHEN: Vor dem Empfangen!");
+    state = TCP_CONNECT;
+    return;
+  }
 
   // =========================
   // 1) RX IMMER ZUERST
   // =========================
-  while (client.connected() && client.available() >= sizeof(Packet)) {
-    int n = client.read((uint8_t *)&incoming, sizeof(Packet));
-    if (n != sizeof(Packet)) {
-      Serial.printf("TCP read failed: got %d of %d bytes\n", n, sizeof(Packet));
+
+  // read header
+  if (receiveState == WAIT_FOR_HEADER) {
+    uint8_t header[3];
+    if (client.available() >= sizeof(header)) {
+      size_t bytesSent = client.read(header, sizeof(header));
+      if (bytesSent != sizeof(header)) {
+        Serial.printf("FEHLER: Nur %d von %d Bytes empfangen!\n", bytesSent, sizeof(header));
+        client.stop();
+        state = TCP_CONNECT;
+        return;
+      }
+      bytes_to_read = header[1];
+      bytes_to_read << 8;
+      bytes_to_read += header[2];
+      receiveState = WAIT_FOR_PAYLOAD;
+    }
+  }
+
+  // read payload
+  while (receiveState == WAIT_FOR_PAYLOAD && client.available() >= 1) {
+    uint8_t signal;
+    size_t bytesSent = client.read(&signal, sizeof(signal));
+    if (bytesSent != sizeof(signal)) {
+      Serial.printf("FEHLER: Nur %d von %d Bytes empfangen!\n", bytesSent, sizeof(signal));
       client.stop();
       state = TCP_CONNECT;
       return;
     }
 
-    /*if (incoming.status == 2) {
-      Serial.printf("ping\n");
-      last_ping = millis();
-      continue;
-    }*/
+    bytes_to_read--;
+    Serial.printf(signalToText(signal));
+    if (bytes_to_read == 0) {
+      receiveState = WAIT_FOR_HEADER;
+      Serial.printf("\n");
+    }
 
-    last_rx = millis();
-
-    if (xQueueSend(printQueue, &incoming.signal, 0) != pdPASS)
+    while (xQueueSend(printQueue, &signal, SAMPLING_RATE_MS) != pdPASS)
       Serial.printf("printQueue overflow!!!\n");
 
-    if (xQueueSend(playbackQueue, &incoming.signal, 0) != pdPASS)
+    while (xQueueSend(playbackQueue, &signal, SAMPLING_RATE_MS) != pdPASS)
       Serial.printf("playbackQueue overflow!!!\n");
   }
 
+  if (!client.connected()) {
+    Serial.println("VERBINDUNG ABGEBROCHEN: Nach dem Empfangen!");
+    state = TCP_CONNECT;
+    return;
+  }
+
   // =========================
-  // 2) GENAU EIN TX-VERSUCH
+  // 2) SAMMLE DATEN, SOLANGE AKTIV
   // =========================
-  if (xQueuePeek(sendQueue, &outgoing.signal, 0) == pdPASS && client.connected()) {
 
-    uint32_t t0 = millis();
-    int written = client.write((uint8_t *)&outgoing, sizeof(Packet));
-    uint32_t dt = millis() - t0;
+  uint8_t outgoing;
+  while (xQueueReceive(sendQueue, &outgoing, 0) == pdPASS) {
+    outgoing_signal.push_back(outgoing);
+    Serial.printf("%d \n", outgoing_signal.size());
+  }
 
-    if (dt > 20) {
-      Serial.printf("TX slow: %ums\n", (unsigned)dt);
-    }
+  // =========================
+  // 3) WENN INAKTIV -> SENDEN
+  // =========================
 
-    /*if (dt > 200) {
-      Serial.printf("TX STALL %ums -> reconnect\n", (unsigned)dt);
+  if (!client.connected()) {
+    Serial.println("VERBINDUNG ABGEBROCHEN: Vor dem Senden!");
+    state = TCP_CONNECT;
+    return;
+  }
+
+  if ((millis() - last_own_activity > INACTIVITY_TIMEOUT_MS + 500) && outgoing_signal.size() > 0) { // +500 damit die queue auch wirklich leer ist
+    Serial.printf("last_own_activity: %d\n", millis() - last_own_activity);
+    Serial.printf("dynamic buffer size: %d\n", outgoing_signal.size());
+
+    // Create & Send Header = status + length
+    uint8_t header[3];
+    uint8_t status = SERVER_CHECK_MODE ? 1 : 0;
+    uint16_t size = static_cast<uint16_t>(outgoing_signal.size());
+    header[0] = status;
+    header[1] = (size >> 8) & 0xFF;   // Hochwertiges Byte von size
+    header[2] = size & 0xFF;          // Niedrigwertiges Byte von size
+    client.write(header, sizeof(header));
+    size_t bytesSent = client.write(header, sizeof(header));
+    if (bytesSent != sizeof(header)) {
+      Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, sizeof(header));
       client.stop();
       state = TCP_CONNECT;
       return;
-    }*/
+    }
+    Serial.printf("%s \n", signalToText(header[0]));
+    Serial.printf("%s \n", signalToText(header[1]));
+    Serial.printf("%s \n", signalToText(header[2]));
 
-    if (written == sizeof(Packet)) {
-      // erst jetzt aus Queue entfernen
-      xQueueReceive(sendQueue, &outgoing.signal, 0);
-    } else {
-      Serial.printf("TCP write failed: wrote %d of %d bytes\n", written, sizeof(Packet));
+    // Send signal
+    bytesSent = client.write(outgoing_signal.data(), outgoing_signal.size());
+    if (bytesSent != outgoing_signal.size()) {
+      Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, outgoing_signal.size());
       client.stop();
       state = TCP_CONNECT;
       return;
     }
-  }
-}
 
-/*
-bool timedWrite(Packet* data) {
-  size_t len = sizeof(Packet);
-  uint32_t t0 = millis();
-  Serial.printf("[TX] write enter len=%u availForWrite=%d connected=%d\n",
-                (unsigned)len,
-                client.availableForWrite(),
-                client.connected());
-
-  size_t n = client.write((uint8_t*)data, len);
-
-  uint32_t dt = millis() - t0;
-  Serial.printf("[TX] write exit  n=%u dt=%ums availForWrite=%d connected=%d\n",
-                (unsigned)n,
-                (unsigned)dt,
-                client.availableForWrite(),
-                client.connected());
-
-  if (dt > 50) {
-    Serial.printf("!!! TX BLOCKED %ums !!!\n", (unsigned)dt);
+    outgoing_signal.clear();
   }
 
-  return n == len;
-}
-
-bool timedReadPacket(Packet* pkt) {
-  uint32_t t0 = millis();
-  Serial.printf("[RX] read enter avail=%d connected=%d\n",
-                client.available(),
-                client.connected());
-
-  int n = client.read((uint8_t*)pkt, sizeof(Packet));
-
-  uint32_t dt = millis() - t0;
-  Serial.printf("[RX] read exit  n=%d dt=%ums avail=%d connected=%d\n",
-                n,
-                (unsigned)dt,
-                client.available(),
-                client.connected());
-
-  if (dt > 50) {
-    Serial.printf("!!! RX BLOCKED %ums !!!\n", (unsigned)dt);
+  if (!client.connected()) {
+    Serial.println("VERBINDUNG ABGEBROCHEN: Nach dem Senden!");
+    state = TCP_CONNECT;
+    return;
   }
-
-  return n == sizeof(Packet);
 }
-*/
 
 void print(bool top_line[384], bool bottom_line[384]) {
   // Reset with ESC @
@@ -237,6 +221,10 @@ void print(bool top_line[384], bool bottom_line[384]) {
       column = column | 0b00000110;  // untere Zeile
 
     printer.write(column);  // die Spalte an den Drucker senden
+
+    // zurücksetzen
+    top_line[i] = false;
+    bottom_line[i] = false;
 
     if (i % 16 == 0)  // alle 16 Spalten mal kurz durchatmen (evtl auch wichtig für den watchdog)
       vTaskDelay(1);
