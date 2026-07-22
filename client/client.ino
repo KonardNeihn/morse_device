@@ -1,4 +1,6 @@
 /*
+ * server soll bei ctrl c alle threads schließen
+ * manchmal startet die playback queue nicht, also arbeitet nicht ab
  * rickroll einabauen
  * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
  * FEHLER: Verbinde mit WGlanE (65650) wifi:sta is connecting, cannot set config
@@ -17,13 +19,13 @@ const char *password2 = "Hurensohn";
 
 
 // Server-Konfiguration
-const char *server_address = "192.168.178.66";  // IP des Servers
+const char *server_address = "morse.hopto.org";  // IP des Servers
 const int port = 5100;                           // Port des Servers Senden
 
 // Schräubchen zum drehen
 #define SAMPLING_RATE_MS 10  // eine Abtastung alle x ms
 
-#define INACTIVITY_TIMEOUT_MS 1000
+#define INACTIVITY_TIMEOUT_MS 5000
 #define QUEUE_SIZE INACTIVITY_TIMEOUT_MS / SAMPLING_RATE_MS
 #define SOUND_FREQ 200
 
@@ -72,7 +74,7 @@ QueueHandle_t printQueue;     // Kommunikationsschnittstelle von sortingTask -> 
 unsigned long last_own_activity = millis() - INACTIVITY_TIMEOUT_MS;
 ReceiveState receiveState = WAIT_FOR_HEADER;
 std::vector<uint8_t> outgoing_signal;
-uint16_t bytes_to_read = 0;
+uint16_t bytes_to_read = 0; // reicht für 87 Minuten
 
 WiFiClient client;
 HardwareSerial printer(2);  // use UART2 (GPIO17 TX, GPIO16 RX)
@@ -120,11 +122,28 @@ void CheckerTask(void *pvParameters) {
     testMosfet();  // contains 100ms pause
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
-    //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
-    //char stats[512];
-    //vTaskGetRunTimeStats(stats);
-    //Serial.printf("stats: %s", stats);
+  
+    switch (state) {
+      case WIFI_CONNECT:
+        showSearchingWiFi();
+        break;
+      
+      case DNS_RESOLVE:
+        showResolvingDNS();
+        break;
+
+      case TCP_CONNECT:
+        showConnectTCP();
+        break;
+
+      case RUNNING:
+        Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+        //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+        //char stats[512];
+        //vTaskGetRunTimeStats(stats);
+        //Serial.printf("stats: %s", stats);
+        break;
+    }
   }
 }
 
@@ -142,7 +161,6 @@ void ConnectionTask(void *pvParameters) {
 
       case WIFI_CONNECT:
         Serial.printf("Connecting to ");
-        showSearchingWiFi();
         if (wichWiFi == 0)
           Serial.println(ssid);
         else
@@ -182,7 +200,6 @@ void ConnectionTask(void *pvParameters) {
         }
 
         Serial.println("Resolving DNS");
-        showResolvingDNS();
         if (WiFi.hostByName(server_address, server_ip)) {
           Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
           state = TCP_CONNECT;
@@ -202,7 +219,6 @@ void ConnectionTask(void *pvParameters) {
 
         if (state == TCP_CONNECT) {
           Serial.println("Connecting TCP");
-          showConnectTCP();
           client.stop();
           if (client.connect(server_ip, port)) {
             //client.setNoDelay(true);
@@ -249,7 +265,7 @@ void InputTask(void *pvParameters) {
   while (true) {
     // nichts tun solange keine wifi oder server verbindung
     while (state != RUNNING && SELF_CHECK_MODE == false)
-      vTaskDelay(500);
+      vTaskDelay(10 / portTICK_PERIOD_MS);
 
     // taste einen frame ab
     signal = 0;
@@ -285,32 +301,35 @@ void PlaybackTask(void *pvParameters) {
   bool sound_on = false;
 
   while (true) {
+    if (state == RUNNING) {
+      // wenn samples in der leitung sind
+      if (xQueueReceive(playbackQueue, &signal, SAMPLING_RATE_MS) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
 
-    // wenn samples in der leitung sind
-    if (xQueueReceive(playbackQueue, &signal, SAMPLING_RATE_MS) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
+        uint8_t mask = 0b10000000;
 
-      uint8_t mask = 0b10000000;
-
-      for (int i = 0; i < 8; i++) {
-        if ((signal & mask)) {
-          // damit es nicht knattert, wenn es ein durchgängiges signal gibt
-          if (sound_on == false) {
-            playTone();
-            digitalWrite(LED, HIGH);
-            sound_on = true;
+        for (int i = 0; i < 8; i++) {
+          if ((signal & mask)) {
+            // damit es nicht knattert, wenn es ein durchgängiges signal gibt
+            if (sound_on == false) {
+              playTone();
+              digitalWrite(LED, HIGH);
+              sound_on = true;
+            }
+          } else {
+            noTone(SPEAKER);
+            digitalWrite(LED, LOW);
+            sound_on = false;
           }
-        } else {
-          noTone(SPEAKER);
-          digitalWrite(LED, LOW);
-          sound_on = false;
+          mask >>= 1;
+          vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
         }
-        mask >>= 1;
-        vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+      } else {
+        noTone(SPEAKER);
+        digitalWrite(LED, LOW);
+        sound_on = false;
       }
     } else {
-      noTone(SPEAKER);
-      digitalWrite(LED, LOW);
-      sound_on = false;
+      vTaskDelay(100 / portTICK_PERIOD_MS);
     }
   }
 }

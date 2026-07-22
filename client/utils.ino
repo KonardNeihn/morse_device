@@ -1,36 +1,27 @@
 void showSearchingWiFi() {
   for (int i = 0; i < 1; i++) {
     digitalWrite(LED, HIGH);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
     digitalWrite(LED, LOW);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
 void showResolvingDNS() {
   for (int i = 0; i < 2; i++) {
     digitalWrite(LED, HIGH);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
     digitalWrite(LED, LOW);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
 void showConnectTCP() {
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED, HIGH);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
     digitalWrite(LED, LOW);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-  }
-}
-
-void hearingNothing() {
-  for (int i = 0; i < 4; i++) {
-    digitalWrite(LED, HIGH);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    digitalWrite(LED, LOW);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
@@ -69,12 +60,6 @@ void testMosfet() {
 }
 
 void handlePackets() {
-
-  if (!client.connected()) {
-    Serial.println("VERBINDUNG ABGEBROCHEN: Vor dem Empfangen!");
-    state = TCP_CONNECT;
-    return;
-  }
 
   // =========================
   // 1) RX IMMER ZUERST
@@ -119,14 +104,10 @@ void handlePackets() {
     while (xQueueSend(printQueue, &signal, SAMPLING_RATE_MS) != pdPASS)
       Serial.printf("printQueue overflow!!!\n");
 
-    while (xQueueSend(playbackQueue, &signal, SAMPLING_RATE_MS) != pdPASS)
+    while (xQueueSend(playbackQueue, &signal, SAMPLING_RATE_MS) != pdPASS) {
       Serial.printf("playbackQueue overflow!!!\n");
-  }
-
-  if (!client.connected()) {
-    Serial.println("VERBINDUNG ABGEBROCHEN: Nach dem Empfangen!");
-    state = TCP_CONNECT;
-    return;
+      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+    }
   }
 
   // =========================
@@ -143,12 +124,6 @@ void handlePackets() {
   // 3) WENN INAKTIV -> SENDEN
   // =========================
 
-  if (!client.connected()) {
-    Serial.println("VERBINDUNG ABGEBROCHEN: Vor dem Senden!");
-    state = TCP_CONNECT;
-    return;
-  }
-
   if ((millis() - last_own_activity > INACTIVITY_TIMEOUT_MS + 500) && outgoing_signal.size() > 0) { // +500 damit die queue auch wirklich leer ist
     Serial.printf("last_own_activity: %d\n", millis() - last_own_activity);
     Serial.printf("dynamic buffer size: %d\n", outgoing_signal.size());
@@ -156,7 +131,7 @@ void handlePackets() {
     // Create & Send Header = status + length
     uint8_t header[3];
     uint8_t status = SERVER_CHECK_MODE ? 1 : 0;
-    uint16_t size = static_cast<uint16_t>(outgoing_signal.size());
+    uint16_t size = static_cast<uint16_t>(outgoing_signal.size()); // reicht für 87 Minuten
     header[0] = status;
     header[1] = (size >> 8) & 0xFF;   // Hochwertiges Byte von size
     header[2] = size & 0xFF;          // Niedrigwertiges Byte von size
@@ -167,9 +142,6 @@ void handlePackets() {
       state = TCP_CONNECT;
       return;
     }
-    Serial.printf("%s \n", signalToText(header[0]));
-    Serial.printf("%s \n", signalToText(header[1]));
-    Serial.printf("%s \n", signalToText(header[2]));
 
     // Send signal
     bytesSent = client.write(outgoing_signal.data(), outgoing_signal.size());
@@ -181,12 +153,6 @@ void handlePackets() {
     }
 
     outgoing_signal.clear();
-  }
-
-  if (!client.connected()) {
-    Serial.println("VERBINDUNG ABGEBROCHEN: Nach dem Senden!");
-    state = TCP_CONNECT;
-    return;
   }
 }
 
