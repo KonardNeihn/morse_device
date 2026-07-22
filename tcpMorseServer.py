@@ -2,6 +2,7 @@ import socket
 import threading
 import queue
 import struct
+import select
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
@@ -62,6 +63,12 @@ class Clienthandler:
         print(f"New client: {self.client_address}")
         while self.running:
             try:
+                while self.running:
+                    ready, _, _ = select.select([self.client_socket], [], [], 1.0)
+
+                if not ready:
+                    continue
+
                 # Zuerst status und length lesen (3 Bytes)
                 header = self.client_socket.recv(3)
                 if not header or len(header) < 3:
