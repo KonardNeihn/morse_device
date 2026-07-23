@@ -1,9 +1,9 @@
 /*
+ * keep alive von client
+ * empfangsbestätigung
  * server soll bei ctrl c alle threads schließen
  * manchmal startet die playback queue nicht, also arbeitet nicht ab
  * rickroll einabauen
- * wenn self/server check mode, muss fremde packete ignorieren, sonst buffer overflow
- * FEHLER: Verbinde mit WGlanE (65650) wifi:sta is connecting, cannot set config
  */
 
 #include <WiFi.h>
@@ -24,12 +24,11 @@ const int port = 5100;                           // Port des Servers Senden
 
 // Schräubchen zum drehen
 #define SAMPLING_RATE_MS 10  // eine Abtastung alle x ms
-
-#define INACTIVITY_TIMEOUT_MS 5000
-#define QUEUE_SIZE INACTIVITY_TIMEOUT_MS / SAMPLING_RATE_MS
+#define RECORDING_TIMEOUT_MS 5000
+#define TCP_TIMEOUT 10000
+#define KEEP_ALIVE_INTERVAL_MS 20000
+#define QUEUE_SIZE 50
 #define SOUND_FREQ 200
-
-
 
 #define TX_PIN 17
 #define RX_PIN 16
@@ -56,11 +55,16 @@ enum ReceiveState {
   WAIT_FOR_PAYLOAD
 };
 
+struct Package {
+  uint8_t status; // 0 -> keep alive, 1 -> normal package, 2 -> confirm package received
+  uint16_t size;  // reicht für 87 Minuten
+  std::vector<uint8_t> payload; // dynamische größe
+};
+
 ConnectionState state = WIFI_CONNECT;
 
 IPAddress server_ip;
 
-//bool BUTTON_PRESSED = false;  // muss öfter gecheckt werdem, darum lieber im sample send task
 volatile bool NO_SOUND_MODE = false;
 volatile bool NO_PRINTER_MODE = false;
 volatile bool SELF_CHECK_MODE = false;
@@ -70,11 +74,6 @@ volatile bool RICK_ROLL_MODE = false;
 QueueHandle_t sendQueue;      // Kommunikationsschnittstelle von InputTask -> tcpTask
 QueueHandle_t playbackQueue;  // Kommunikationsschnittstelle von sortingTask -> outputTask
 QueueHandle_t printQueue;     // Kommunikationsschnittstelle von sortingTask -> printTask
-
-unsigned long last_own_activity = millis() - INACTIVITY_TIMEOUT_MS;
-ReceiveState receiveState = WAIT_FOR_HEADER;
-std::vector<uint8_t> outgoing_signal;
-uint16_t bytes_to_read = 0; // reicht für 87 Minuten
 
 WiFiClient client;
 HardwareSerial printer(2);  // use UART2 (GPIO17 TX, GPIO16 RX)
@@ -95,9 +94,9 @@ void setup() {
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint8_t));
-  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint8_t));
-  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint8_t));
+  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
+  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
+  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
 
   xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(InputTask, "Input Task", 4096, NULL, 1, NULL, 1);
@@ -148,8 +147,11 @@ void CheckerTask(void *pvParameters) {
 }
 
 void ConnectionTask(void *pvParameters) {
-  int wichWiFi = 0;
+  std::vector<Package> incoming;
+  std::vector<Package> outgoing;
+  
   static int lost_count = 0;
+  unsigned long last_received = millis(); 
 
   while (true) {
     if (SELF_CHECK_MODE) {
@@ -160,36 +162,20 @@ void ConnectionTask(void *pvParameters) {
     switch (state) {
 
       case WIFI_CONNECT:
-        Serial.printf("Connecting to ");
-        if (wichWiFi == 0)
-          Serial.println(ssid);
-        else
-          Serial.println(ssid2);
+        connectWifi(ssid, password);
+        if (state == DNS_RESOLVE) 
+          break;
+        Serial.printf("Couldn't connect to %s\n", ssid);
 
-        WiFi.disconnect(true, true);
-        WiFi.mode(WIFI_OFF);
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        WiFi.mode(WIFI_STA);
-
-        WiFi.setSleep(false);
-        esp_wifi_set_ps(WIFI_PS_NONE);
-        if (wichWiFi == 0)
-          WiFi.begin(ssid, password);
-        else
-          WiFi.begin(ssid2, password2);
-
-        if (WiFi.waitForConnectResult() == WL_CONNECTED) {
-          state = DNS_RESOLVE;
-          Serial.println("WiFi OK");
-        } else {
-          Serial.println("WiFi failed");
-          if (wichWiFi == 0)
-            wichWiFi = 1;
-          else
-            wichWiFi = 0;
-          vTaskDelay(2000 / portTICK_PERIOD_MS);
-        }
-
+        // if connecting to ssid2 failed
+        connectWifi(ssid2, password2);
+        if (state == DNS_RESOLVE) 
+          break;
+        Serial.printf("Couldn't connect to %s\n", ssid2);
+        
+        // a good restart often helps reconnecting somehow
+        Serial.printf("Restarting...\n");
+        ESP.restart();
         break;
 
       case DNS_RESOLVE:
@@ -221,7 +207,7 @@ void ConnectionTask(void *pvParameters) {
           Serial.println("Connecting TCP");
           client.stop();
           if (client.connect(server_ip, port)) {
-            //client.setNoDelay(true);
+            client.setNoDelay(false);
             //client.setTimeout(5);  // z.B. 5ms
             state = RUNNING;
             // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
@@ -252,7 +238,16 @@ void ConnectionTask(void *pvParameters) {
           lost_count = 0;
         }
 
-        handlePackets();
+        receivePackage(&last_received);
+        sendPackage();
+
+        if (millis() - last_received > KEEP_ALIVE_INTERVAL_MS) {
+          Package keep_alive;
+          keep_alive.status = 0;
+          keep_alive.size = keep_alive.payload.size();
+          if (!putPackageIntoQueue(sendQueue, keep_alive))
+            Serial.println("sendQueue overflow");
+        }
         break;
     }
     vTaskDelay(3 / portTICK_PERIOD_MS);
@@ -260,139 +255,147 @@ void ConnectionTask(void *pvParameters) {
 }
 
 void InputTask(void *pvParameters) {
-  uint8_t signal;
+  Package package;
+  unsigned long last_pressed = millis() - RECORDING_TIMEOUT_MS;
 
   while (true) {
     // nichts tun solange keine wifi oder server verbindung
     while (state != RUNNING && SELF_CHECK_MODE == false)
       vTaskDelay(10 / portTICK_PERIOD_MS);
 
-    // taste einen frame ab
-    signal = 0;
-    for (int j = 0; j < 8; j++) {
-      signal <<= 1;
-      if (digitalRead(BUTTON) == false)  // button pressed
-        signal++;
-      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
-    }
+    // ein neues Package anfangen
+    if (digitalRead(BUTTON) == false) {  // button pressed
+      // wichtig, dass package erst hier erstellt, damit in queue pointer auf einzigartiges Object kommt
+      package.status = 1;
+      // ein packet aufnehmen, bis lange nichts mehr gedrückt
+      while (millis() - last_pressed < RECORDING_TIMEOUT_MS) {
+        Serial.printf("Time until send: %d \n", RECORDING_TIMEOUT_MS + last_pressed - millis());
+        // taste einen frame ab
+        uint8_t signal = 0;
+        for (int j = 0; j < 8; j++) {
+          signal <<= 1;
+          if (digitalRead(BUTTON) == false) {  // button pressed
+            signal++;
+            last_pressed = millis();
+          }
+          vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+        }
+        package.payload.push_back(signal);
+      }
+      // fertiges Package
+      package.size = package.payload.size();
+      if (SELF_CHECK_MODE) {
 
-    if (signal != 0)
-      last_own_activity = millis();
+        if (!putPackageIntoQueue(playbackQueue, package))
+          Serial.println("playbackQueue overflow");
+        if (!putPackageIntoQueue(printQueue, package))
+          Serial.println("printQueue overflow");
 
-    if (millis() - last_own_activity > INACTIVITY_TIMEOUT_MS)
-      continue;
-
-    // sende den Frame
-    if (SELF_CHECK_MODE) {
-      if (xQueueSend(printQueue, &signal, 0) != pdPASS)
-        Serial.printf("printQueue overflow!!!\n");
-      if (xQueueSend(playbackQueue, &signal, 0) != pdPASS)
-        Serial.printf("playbackQueue overflow!!!\n");
-
-    } else {
-      if (xQueueSend(sendQueue, &signal, 0) != pdPASS)
-        Serial.printf("sendQueue overflow!!!\n");
+        package.payload.clear();
+      } else {
+        if (!putPackageIntoQueue(sendQueue, package))
+          Serial.println("sendQueue overflow");
+        package.payload.clear();
+      }
     }
   }
 }
 
 void PlaybackTask(void *pvParameters) {
-  uint8_t signal;
+  Package package;
   bool sound_on = false;
 
   while (true) {
-    if (state == RUNNING) {
-      // wenn samples in der leitung sind
-      if (xQueueReceive(playbackQueue, &signal, SAMPLING_RATE_MS) == pdPASS) {  // wartet bis neues Element kommt. blockiert die cpu nicht
+    vTaskDelay(100 / portMAX_DELAY);  // damit nicht gepollt wird
 
-        uint8_t mask = 0b10000000;
+    // damit das status indizieren mit der LED aus dem anderen thread nicht überschrieben wird
+    if (state != RUNNING) 
+      continue;
 
-        for (int i = 0; i < 8; i++) {
-          if ((signal & mask)) {
-            // damit es nicht knattert, wenn es ein durchgängiges signal gibt
-            if (sound_on == false) {
-              playTone();
-              digitalWrite(LED, HIGH);
-              sound_on = true;
-            }
-          } else {
-            noTone(SPEAKER);
-            digitalWrite(LED, LOW);
-            sound_on = false;
+    // wenn ein/kein package in der leitung ist
+    if (uxQueueMessagesWaiting(playbackQueue) == 0) {
+      noTone(SPEAKER);
+      digitalWrite(LED, LOW);
+      sound_on = false;
+      continue;
+    }
+
+    getPackageFromQueue(playbackQueue, package);
+
+    // packet abarbeiten
+    for (uint8_t signal : package.payload) {
+      uint8_t mask = 0b10000000;
+
+      for (int i = 0; i < 8; i++) {
+        if ((signal & mask)) {
+          // damit es nicht knattert, wenn es ein durchgängiges signal gibt
+          if (sound_on == false) {
+            playTone();
+            digitalWrite(LED, HIGH);
+            sound_on = true;
           }
-          mask >>= 1;
-          vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
+        } else {
+          noTone(SPEAKER);
+          digitalWrite(LED, LOW);
+          sound_on = false;
         }
-      } else {
-        noTone(SPEAKER);
-        digitalWrite(LED, LOW);
-        sound_on = false;
+        mask >>= 1;
+        vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
       }
-    } else {
-      vTaskDelay(100 / portTICK_PERIOD_MS);
     }
   }
 }
 
 void PrintTask(void *pvParameters) {
-  unsigned long last_received = millis() - INACTIVITY_TIMEOUT_MS;
-  uint8_t signal;
+  Package package;
   static bool top_line[384] = {false};
   static bool bottom_line[384] = {false};
   int index = 0;
   bool writing_top_line = true;
-  bool something_in_it = false;
 
   while (true) {
-    if (xQueueReceive(printQueue, &signal, 10) == pdPASS) {  // guckt, ob neues element da ist
-      last_received = millis();
+    // um polling zu vermeiden
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    // wenn ein/kein package in der leitung ist
+    if (uxQueueMessagesWaiting(printQueue) == 0)
+      continue;
+
+    // package auslesen
+    getPackageFromQueue(printQueue, package);
+
+    // überspringen, wenn no printer mode
+    if (NO_PRINTER_MODE == true)
+      continue;
+
+    // packet abarbeiten
+    for (uint8_t signal : package.payload) {
       uint8_t mask = 0b10000000;
 
       for (int j = 0; j < 8; j++) {
-
-        int width_in_pixels = 1;  // SAMPLING_RATE_MS / 20 einfügen für alle 20 millisec bedeuten ein pixel druck. ohne rest
-
-        // nichts anfangen, nichts zu drucken
-        if ((signal & mask) == false && something_in_it == false)
-          width_in_pixels = 0;
+        // ob das in die erste oder zweite zeile des druckers kommt
+        if (writing_top_line)
+          top_line[index] = (signal & mask);
         else
-          something_in_it = true;
+          bottom_line[index] = (signal & mask);
 
-        // erstellt und sammelt die daten für den druck
-        while (width_in_pixels > 0) {
-        
-          // ob das in die erste oder zweite zeile des druckers kommt
-          if (writing_top_line)
-            top_line[index] = (signal & mask);
-          else
-            bottom_line[index] = (signal & mask);
+        index++;
 
-          index++;
-          width_in_pixels--;
-
-          // 
-          if (index == 384) {
-            if (writing_top_line == true) {
-              writing_top_line = false;
-              index = 0;
-            } else {
-              if (NO_PRINTER_MODE == false)
-                print(top_line, bottom_line);
-
-              something_in_it = false;
-              writing_top_line = true;
-              index = 0;
-            }
+        // wenn eine zeile gedruckt werden kann
+        if (index == 384) {
+          if (writing_top_line == true) {
+            writing_top_line = false;
+            index = 0;
+          } else {
+            print(top_line, bottom_line);
+            memset(top_line, 0, sizeof(top_line));
+            memset(bottom_line, 0, sizeof(bottom_line));
+            writing_top_line = true;
+            index = 0;
           }
         }
-        mask >>= 1;
       }
-    } else if (millis() - last_received > INACTIVITY_TIMEOUT_MS && something_in_it == true) {
-      if (NO_PRINTER_MODE == false)
-        print(top_line, bottom_line);
-      something_in_it = false;
-      writing_top_line = true;
-      index = 0;
+      mask >>= 1;
     }
   }
 }

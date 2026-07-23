@@ -59,100 +59,167 @@ void testMosfet() {
   digitalWrite(MOSFET, HIGH);
 }
 
-void handlePackets() {
+void connectWifi(const char ssid[], const char password[]) {
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  vTaskDelay(100 / portTICK_PERIOD_MS);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
-  // =========================
-  // 1) RX IMMER ZUERST
-  // =========================
+  Serial.printf("Connecting to %s\n", ssid);
 
-  // read header
-  if (receiveState == WAIT_FOR_HEADER) {
-    uint8_t header[3];
-    if (client.available() >= sizeof(header)) {
-      size_t bytesSent = client.read(header, sizeof(header));
-      if (bytesSent != sizeof(header)) {
-        Serial.printf("FEHLER: Nur %d von %d Bytes empfangen!\n", bytesSent, sizeof(header));
+  WiFi.begin(ssid, password);
+
+  if (WiFi.waitForConnectResult() == WL_CONNECTED) {
+    state = DNS_RESOLVE;
+    Serial.println("WiFi OK");
+  } 
+}
+
+// ist nötig, um std::vector<> senden zu können (liegt im heap)
+bool putPackageIntoQueue(QueueHandle_t queue, const Package& package) {
+  Package* copy = new Package(package);
+  if (xQueueSend(queue, &copy, 0) != pdPASS) {
+    Serial.printf("Queue overflow!!!\n");
+    delete copy;
+    return false;
+  }
+  return true;
+}
+
+// ist nötig, um std::vector<> senden zu können (liegt im heap)
+bool getPackageFromQueue(QueueHandle_t queue, Package& package) {
+  Package* p;
+  if (xQueueReceive(queue, &p, 0) != pdPASS)
+    return false;
+
+  package = *p;   // Deep Copy (std::vector kopiert korrekt)
+  delete p;
+  return true;
+}
+
+void receivePackage(unsigned long *last_received) {
+  // neues packet?
+  if (!client.available())
+    return;
+
+  Package incoming; // wichtig, dass erst hier erstellt, damit in queue pointer auf einzigartiges Object kommt
+  uint16_t bytes_to_read;
+
+  // read status
+  size_t bytesRead = client.read(&incoming.status, sizeof(incoming.status));
+  if (bytesRead != sizeof(incoming.status)) {
+    Serial.printf("FEHLER: Nur %d von %d Bytes von Package.status empfangen!\n", bytesRead, sizeof(incoming.status));
+    client.stop();
+    state = TCP_CONNECT;
+    return;
+  }
+  *last_received = millis();
+
+  // wait for Package.size
+  while(client.available() < sizeof(incoming.size)) {
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    if (millis() - *last_received > TCP_TIMEOUT) {
+      Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
+      client.stop();
+      state = TCP_CONNECT;
+      return;
+    }
+  }
+
+  // read size
+  uint8_t size[2];
+  bytesRead = client.read(size, sizeof(size));
+  if (bytesRead != sizeof(size)) {
+    Serial.printf("FEHLER: Nur %d von %d Bytes von Package.size empfangen!\n", bytesRead, sizeof(size));
+    client.stop();
+    state = TCP_CONNECT;
+    return;
+  }
+  incoming.size = (uint16_t(size[0]) << 8) | size[1];
+  *last_received = millis();
+  bytes_to_read = incoming.size;
+
+  // read Package.payload
+  while(bytes_to_read > 0) {
+    if (client.available()) {
+      uint8_t signal;
+      bytesRead = client.read(&signal, sizeof(signal));
+      if (bytesRead != sizeof(signal)) {
+        Serial.printf("FEHLER: Nur %d von %d Bytes von Package.payload empfangen!\n", bytesRead, sizeof(signal));
         client.stop();
         state = TCP_CONNECT;
         return;
       }
-      bytes_to_read = header[1];
-      bytes_to_read << 8;
-      bytes_to_read += header[2];
-      receiveState = WAIT_FOR_PAYLOAD;
+      *last_received = millis();
+      bytes_to_read--;
+      Serial.printf(signalToText(signal));
+      incoming.payload.push_back(signal);
+    } else {
+      vTaskDelay(10 / portTICK_PERIOD_MS);
     }
-  }
-
-  // read payload
-  while (receiveState == WAIT_FOR_PAYLOAD && client.available() >= 1) {
-    uint8_t signal;
-    size_t bytesSent = client.read(&signal, sizeof(signal));
-    if (bytesSent != sizeof(signal)) {
-      Serial.printf("FEHLER: Nur %d von %d Bytes empfangen!\n", bytesSent, sizeof(signal));
+    if (millis() - *last_received > TCP_TIMEOUT) {
+      Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
       client.stop();
       state = TCP_CONNECT;
       return;
     }
+  }
+  Serial.printf("\n");
 
-    bytes_to_read--;
-    Serial.printf(signalToText(signal));
-    if (bytes_to_read == 0) {
-      receiveState = WAIT_FOR_HEADER;
-      Serial.printf("\n");
-    }
+  if (!putPackageIntoQueue(printQueue, incoming))
+    Serial.println("printQueue overflow");
+  if (!putPackageIntoQueue(playbackQueue, incoming))
+    Serial.println("playbackQueue overflow");
 
-    while (xQueueSend(printQueue, &signal, SAMPLING_RATE_MS) != pdPASS)
-      Serial.printf("printQueue overflow!!!\n");
+  if (incoming.status == 2)
+    return;
 
-    while (xQueueSend(playbackQueue, &signal, SAMPLING_RATE_MS) != pdPASS) {
-      Serial.printf("playbackQueue overflow!!!\n");
-      vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
-    }
+  // send receiving confirmation
+  Package confirmation;
+  confirmation.status = 2;
+  confirmation.payload.push_back(0b11111111);
+  confirmation.payload.push_back(0);
+  confirmation.payload.push_back(0b11111111);
+  confirmation.payload.push_back(0b11111111);
+  confirmation.payload.push_back(0b11111111);
+  confirmation.payload.push_back(0);
+  confirmation.payload.push_back(0b11111111);
+  confirmation.size = confirmation.payload.size();
+
+  if (!putPackageIntoQueue(sendQueue, incoming))
+    Serial.println("sendQueue overflow");
+}
+
+void sendPackage() {
+  Package outgoing;
+  // package to send?
+  if (uxQueueMessagesWaiting(sendQueue) == 0)
+    return;
+  getPackageFromQueue(sendQueue, outgoing);
+
+  // Create & Send Header = status + length
+  uint8_t header[3];
+  header[0] = outgoing.status;
+  header[1] = (outgoing.size >> 8) & 0xFF;   // Hochwertiges Byte von size
+  header[2] = outgoing.size & 0xFF;          // Niedrigwertiges Byte von size
+  
+  size_t bytesSent = client.write(header, sizeof(header));
+  if (bytesSent != sizeof(header)) {
+    Serial.printf("FEHLER: Nur %d von %d Bytes von header gesendet!\n", bytesSent, sizeof(header));
+    client.stop();
+    state = TCP_CONNECT;
+    return;
   }
 
-  // =========================
-  // 2) SAMMLE DATEN, SOLANGE AKTIV
-  // =========================
-
-  uint8_t outgoing;
-  while (xQueueReceive(sendQueue, &outgoing, 0) == pdPASS) {
-    outgoing_signal.push_back(outgoing);
-    Serial.printf("%d \n", outgoing_signal.size());
-  }
-
-  // =========================
-  // 3) WENN INAKTIV -> SENDEN
-  // =========================
-
-  if ((millis() - last_own_activity > INACTIVITY_TIMEOUT_MS + 500) && outgoing_signal.size() > 0) { // +500 damit die queue auch wirklich leer ist
-    Serial.printf("last_own_activity: %d\n", millis() - last_own_activity);
-    Serial.printf("dynamic buffer size: %d\n", outgoing_signal.size());
-
-    // Create & Send Header = status + length
-    uint8_t header[3];
-    uint8_t status = SERVER_CHECK_MODE ? 1 : 0;
-    uint16_t size = static_cast<uint16_t>(outgoing_signal.size()); // reicht für 87 Minuten
-    header[0] = status;
-    header[1] = (size >> 8) & 0xFF;   // Hochwertiges Byte von size
-    header[2] = size & 0xFF;          // Niedrigwertiges Byte von size
-    size_t bytesSent = client.write(header, sizeof(header));
-    if (bytesSent != sizeof(header)) {
-      Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, sizeof(header));
-      client.stop();
-      state = TCP_CONNECT;
-      return;
-    }
-
-    // Send signal
-    bytesSent = client.write(outgoing_signal.data(), outgoing_signal.size());
-    if (bytesSent != outgoing_signal.size()) {
-      Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, outgoing_signal.size());
-      client.stop();
-      state = TCP_CONNECT;
-      return;
-    }
-
-    outgoing_signal.clear();
+  // Send signal
+  bytesSent = client.write(outgoing.payload.data(), outgoing.payload.size());
+  if (bytesSent != outgoing.payload.size()) {
+    Serial.printf("FEHLER: Nur %d von %d Bytes von payload gesendet!\n", bytesSent, outgoing.payload.size());
+    client.stop();
+    state = TCP_CONNECT;
+    return;
   }
 }
 
@@ -186,10 +253,6 @@ void print(bool top_line[384], bool bottom_line[384]) {
       column = column | 0b00000110;  // untere Zeile
 
     printer.write(column);  // die Spalte an den Drucker senden
-
-    // zurücksetzen
-    top_line[i] = false;
-    bottom_line[i] = false;
 
     if (i % 16 == 0)  // alle 16 Spalten mal kurz durchatmen (evtl auch wichtig für den watchdog)
       vTaskDelay(1);
