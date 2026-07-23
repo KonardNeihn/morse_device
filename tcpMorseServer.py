@@ -99,6 +99,16 @@ class Clienthandler:
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
 
+                # keep alive zurück senden
+                if status == 0:
+                    response = {
+                        "status": 0,
+                        "length": 0,
+                        "signal": b""
+                    }
+
+                    self.send(response)
+
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)
 

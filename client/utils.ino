@@ -168,6 +168,9 @@ void receivePackage(unsigned long *last_received) {
   }
   Serial.printf("\n");
 
+  if (incoming.status == 0)
+    Serial.printf("keep alive got\n");
+
   if (!putPackageIntoQueue(printQueue, incoming))
     Serial.println("printQueue overflow");
   if (!putPackageIntoQueue(playbackQueue, incoming))

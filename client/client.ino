@@ -1,8 +1,5 @@
 /*
- * keep alive von client
- * empfangsbestätigung
  * server soll bei ctrl c alle threads schließen
- * manchmal startet die playback queue nicht, also arbeitet nicht ab
  * rickroll einabauen
  */
 
@@ -147,11 +144,9 @@ void CheckerTask(void *pvParameters) {
 }
 
 void ConnectionTask(void *pvParameters) {
-  std::vector<Package> incoming;
-  std::vector<Package> outgoing;
-  
   static int lost_count = 0;
-  unsigned long last_received = millis(); 
+  unsigned long last_received; 
+  int keep_alive_counter = 1;
 
   while (true) {
     if (SELF_CHECK_MODE) {
@@ -210,6 +205,7 @@ void ConnectionTask(void *pvParameters) {
             client.setNoDelay(false);
             //client.setTimeout(5);  // z.B. 5ms
             state = RUNNING;
+            last_received = millis();
             // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
             Serial.println("TCP connected");
           } else {
@@ -241,12 +237,24 @@ void ConnectionTask(void *pvParameters) {
         receivePackage(&last_received);
         sendPackage();
 
-        if (millis() - last_received > KEEP_ALIVE_INTERVAL_MS) {
+        if (millis() - last_received > KEEP_ALIVE_INTERVAL_MS * keep_alive_counter) {
           Package keep_alive;
           keep_alive.status = 0;
+          keep_alive.payload.push_back(0);
           keep_alive.size = keep_alive.payload.size();
           if (!putPackageIntoQueue(sendQueue, keep_alive))
             Serial.println("sendQueue overflow");
+          Serial.printf("keep alive sent\n");
+          keep_alive_counter++;
+        }
+        if (millis() - last_received < KEEP_ALIVE_INTERVAL_MS) {
+          keep_alive_counter = 1;
+        }
+
+        if (keep_alive_counter >= 4) {
+          Serial.println("TCP not answering keep alive, reconnecting...");
+          state = TCP_CONNECT;
+          keep_alive_counter = 1;
         }
         break;
     }
