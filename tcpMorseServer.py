@@ -199,6 +199,7 @@ class Clienthandler:
         try:
             self.client_socket.shutdown(socket.SHUT_RDWR)
         except OSError:
+            log(f"Socket error ({type(e).__name__}): {e} with {self.client_address}", ERROR)
             pass
 
         self.client_socket.close()
