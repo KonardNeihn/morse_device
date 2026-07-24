@@ -120,12 +120,12 @@ class Clienthandler:
                     continue
 
                 # Zuerst status und length lesen (3 Bytes)
-                header = recv_exact(3)
+                header = self.recv_exact(3)
 
                 status = header[0]
                 length = (header[1] << 8) | header[2]
 
-                signal_data = recv_exact(length)
+                signal_data = self.recv_exact(length)
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
