@@ -100,8 +100,6 @@ class Clienthandler:
 
                 status = header[0]
                 length = (header[1] << 8) | header[2]
-                
-                log(f"Empfange Paket: status={status}, length={length} von {self.client_address}", INFO)
 
                 signal_data = self.client_socket.recv(length)
                 if not signal_data or len(signal_data) < length:
@@ -111,7 +109,7 @@ class Clienthandler:
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
 
-                log(f"Paket from: {self.client_address} {format_packet(packet)}", INFO)
+                log(f"Package received: {self.client_address} {format_packet(packet)}", INFO)
 
 
                 # keep alive zurück senden
@@ -155,6 +153,7 @@ class Clienthandler:
                 if packet is None:
                     break
                 self.client_socket.sendall(packet)
+                log(f"Package sent: {self.client_address} {format_packet(packet)}", INFO)
             except Exception as e:
                 log(f"Error while sending: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
 
@@ -173,7 +172,7 @@ def log(message, level=INFO):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     color = COLORS.get(level.value, "")
     reset = COLORS["RESET"]
-    print(f"{color}[{timestamp}] [{level.value}]{reset} {message}")
+    print(f"{timestamp} {color}[{level.value}]{reset} {message}")
 
 def format_packet(packet):
     status = packet["status"]
