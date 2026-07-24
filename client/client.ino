@@ -1,5 +1,5 @@
 /*
- * server soll bei ctrl c alle threads schließen
+ * server warum disconnected bei timeout?
  * rickroll einabauen
  */
 

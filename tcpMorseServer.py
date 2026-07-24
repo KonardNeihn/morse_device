@@ -121,11 +121,17 @@ class Clienthandler:
 
                 # Zuerst status und length lesen (3 Bytes)
                 header = self.recv_exact(3)
+                if header is None:
+                    log(f"No header received: {self.client_address} (Timeout)", ERROR)
+                    break
 
                 status = header[0]
                 length = (header[1] << 8) | header[2]
 
                 signal_data = self.recv_exact(length)
+                if signal_data is None:
+                    log(f"No payload received: {self.client_address}", ERROR)
+                    break
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
