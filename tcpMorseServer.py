@@ -44,7 +44,7 @@ clients_lock = threading.Lock()
 def main():
     running = True
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSADDR, 1)
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
     server.settimeout(1.0)      # wichtig!
