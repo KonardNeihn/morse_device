@@ -78,8 +78,7 @@ def main():
         log(f"Server wird beendet...", WARNING)
 
     except Exception as e:
-                log(f"Error in main server: ({type(e).__name__}): {e}", ERROR)
-                break
+        log(f"Error in main server: ({type(e).__name__}): {e}", ERROR)
     
     finally:
         running = False
