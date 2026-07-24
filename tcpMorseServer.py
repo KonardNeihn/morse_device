@@ -150,9 +150,6 @@ class Clienthandler:
 
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)
-            
-            except OSError:
-                break
 
             except Exception as e:
                 log(f"Error while receiving: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
