@@ -180,7 +180,9 @@ def log(message, level=INFO):
 def format_packet(packet):
     status = packet["status"]
     length = packet["length"]
-    signal = packet["signal"].hex(" ")
+    signal = ""
+    for byte in packet["siignal"]:
+        signal += "1" if byte else "0"
     return f"Status: {status}, Length: {length}, Signal: {signal}"
 
 # ==============================
