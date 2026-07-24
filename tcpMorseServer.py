@@ -171,9 +171,9 @@ def broadcast (message, sender):
 
 def log(message, level=INFO):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    color = COLORS.get(level, "")
+    color = COLORS.get(level.value, "")
     reset = COLORS["RESET"]
-    print(f"{color}[{timestamp}] [{level}]{reset} {message}")
+    print(f"{color}[{timestamp}] [{level.value}]{reset} {message}")
 
 def format_packet(packet):
     status = packet["status"]
