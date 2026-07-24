@@ -47,7 +47,7 @@ def main():
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
-    server.settimeout(1.0)      # wichtig!
+    server.settimeout(1.0)      # wichtig für kontrolliertes schließen
 
     log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", GOOD_INFO)
 
@@ -120,18 +120,12 @@ class Clienthandler:
                     continue
 
                 # Zuerst status und length lesen (3 Bytes)
-                header = self.client_socket.recv(3)
-                if not header or len(header) < 3:
-                    log(f"Unvollständiger Header von {self.client_address}", ERROR)
-                    break
+                header = recv_exact(3)
 
                 status = header[0]
                 length = (header[1] << 8) | header[2]
 
-                signal_data = self.client_socket.recv(length)
-                if not signal_data or len(signal_data) < length:
-                    log(f"Unvollständige Payload von {self.client_address}. Erwartet: {length}, erhalten: {len(signal_data)}", ERROR)
-                    break
+                signal_data = recv_exact(length)
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
@@ -165,6 +159,15 @@ class Clienthandler:
         with clients_lock:
             if self in clients:
                 clients.remove(self)
+
+    def recv_exact(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                return None
+            data += chunk
+        return data
     
     def send(self, packet):
         # packet ist ein Dictionary: {"status": uint8, "length": uint8, "signal": bytes}

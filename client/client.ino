@@ -413,5 +413,11 @@ void PrintTask(void *pvParameters) {
       writing_top_line = true;
       index = 0;
     }
+    // Zeilenvorschub
+    printer.write('\n');
+    printer.write('\n');
+    printer.write('\n');
+    printer.flush();
+    vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
