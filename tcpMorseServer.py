@@ -163,7 +163,7 @@ class Clienthandler:
     def recv_exact(self, size):
         data = b""
         while len(data) < size:
-            chunk = sock.recv(size - len(data))
+            chunk = self.client_socket.recv(size - len(data))
             if not chunk:
                 return None
             data += chunk
