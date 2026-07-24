@@ -1,5 +1,4 @@
 /*
- * server zeit bei logs
  * server soll bei ctrl c alle threads schließen
  * rickroll einabauen
  */

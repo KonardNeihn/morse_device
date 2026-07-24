@@ -34,8 +34,6 @@ GOOD_INFO = LogLevel.GOOD_INFO
 WARNING = LogLevel.WARNING
 ERROR = LogLevel.ERROR
 
-running = True
-
 clients = []
 clients_lock = threading.Lock()
 
@@ -44,28 +42,44 @@ clients_lock = threading.Lock()
 # ==============================
 
 def main():
+    running = True
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
+    server.settimeout(1.0)      # wichtig!
 
     log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", GOOD_INFO)
 
-    while True:
-        try:
-            client_socket, client_address = server.accept()
-            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 20)      # nach 20 s Inaktivität
-            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)     # alle 10 s erneut
-            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)        # 3 Versuche
-            client_socket.setblocking(True)
-        
-            client = Clienthandler(client_socket, client_address)
+    try: 
+        while running:
+            try:
+                client_socket, client_address = server.accept()
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 20)      # nach 20 s Inaktivität
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)     # alle 10 s erneut
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)        # 3 Versuche
+                client_socket.setblocking(True)
+            
+            except socket.timeout:
+                continue
 
+            client = Clienthandler(client_socket, client_address)
             with clients_lock:
                 clients.append(client)
 
-        except Exception as e:
-            log(f"Error: ({type(e).__name__}): {e}", ERROR)
+    except KeyboardInterrupt:
+        log(f"Server wird beendet...", WARNING)
+    
+    finally:
+        running = False
+        server.close()
+        # um deadlock zu verhindern
+        with clients_lock:
+            current_clients = clients[:]
+
+        for client in current_clients:
+            client.stop()
+
 
 
 # ==============================
@@ -129,6 +143,7 @@ class Clienthandler:
 
             except Exception as e:
                 log(f"Error while receiving: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
+                break
 
         log(f"Client disconnected: {self.client_address}", WARNING)
         self.client_socket.close()
@@ -158,6 +173,19 @@ class Clienthandler:
                 log(f"Package sent to: {self.client_address}", INFO)
             except Exception as e:
                 log(f"Error while sending: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
+    
+    def stop(self):
+        self.running = False
+
+        try:
+            self.client_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+        self.client_socket.close()
+        self.out_queue.put(None)
+        self.receive_thread.join()
+        self.send_thread.join()
 
 
 # ==============================
