@@ -24,7 +24,7 @@ COLORS = {
 
 class LogLevel(Enum):
     INFO = "INFO"
-    GOOD_INFO = "INFO"
+    GOOD_INFO = "GOOD INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
 
