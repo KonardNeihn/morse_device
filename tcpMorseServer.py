@@ -122,7 +122,7 @@ class Clienthandler:
                 # Zuerst status und length lesen (3 Bytes)
                 header = self.recv_exact(3)
                 if header is None:
-                    log(f"No header received: {self.client_address} (Timeout)", ERROR)
+                    log(f"No header received: {self.client_address}", ERROR)
                     break
 
                 status = header[0]
