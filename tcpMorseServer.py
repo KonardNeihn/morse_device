@@ -44,6 +44,7 @@ clients_lock = threading.Lock()
 def main():
     running = True
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
     server.settimeout(1.0)      # wichtig!
@@ -63,19 +64,29 @@ def main():
             except socket.timeout:
                 continue
 
+            except Exception as e:
+                log(f"Error while connecting: ({type(e).__name__}): {e}", ERROR)
+                break
+
             client = Clienthandler(client_socket, client_address)
             with clients_lock:
                 clients.append(client)
+            
+
 
     except KeyboardInterrupt:
         log(f"Server wird beendet...", WARNING)
+
+    except Exception as e:
+                log(f"Error in main server: ({type(e).__name__}): {e}", ERROR)
+                break
     
     finally:
         running = False
         server.close()
         # um deadlock zu verhindern
         with clients_lock:
-            current_clients = clients[:]
+            current_clients = clients.copy()
 
         for client in current_clients:
             client.stop()
@@ -140,6 +151,9 @@ class Clienthandler:
 
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)
+            
+            except OSError:
+                break
 
             except Exception as e:
                 log(f"Error while receiving: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
