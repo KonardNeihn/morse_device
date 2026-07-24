@@ -15,7 +15,7 @@ BUFFER_SIZE = 5
 
 # ANSI-Farbcodes
 COLORS = {
-    "INFO": "\033[37m",      # Grün
+    "INFO": "\033[0m",      # Weiß
     "GOOD INFO": "\033[32m", # Grün
     "WARNING": "\033[33m",   # Gelb
     "ERROR": "\033[31m",     # Rot
