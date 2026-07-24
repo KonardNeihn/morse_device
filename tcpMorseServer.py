@@ -114,7 +114,6 @@ class Clienthandler:
 
                 log(f"Package received: {self.client_address} {format_packet(packet)}", INFO)
 
-
                 # keep alive zurück senden
                 if status == 0:
                     response = {
@@ -122,8 +121,8 @@ class Clienthandler:
                         "length": 0,
                         "signal": b""
                     }
-
                     self.send(response)
+                    continue
 
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)
