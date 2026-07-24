@@ -5,12 +5,8 @@ import struct
 import select
 from datetime import datetime
 from enum import Enum
+import sys
 
-
-class LogLevel(Enum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
 
 # ANSI-Farbcodes
 COLORS = {
@@ -20,24 +16,17 @@ COLORS = {
     RESET: "\033[0m",    # Reset
 }
 
-
-def log(message, level=INFO):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    color = COLORS.get(level, "")
-    reset = COLORS[RESET]
-    print(f"{color}[{timestamp}] [{level}]{reset} {message}")
-
-def format_packet(packet):
-    status = packet["status"]
-    length = packet["length"]
-    signal = packet["signal"].hex(" ")
-    return f"Status: {status}, Length: {length}, Signal: {signal}"
+class LogLevel(Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
 TCP_PORT = 5100
 BUFFER_SIZE = 5
 
+running = True
 
 clients = []
 clients_lock = threading.Lock()
@@ -174,6 +163,18 @@ def broadcast (message, sender):
         for client in clients:
             if client != sender:
                 client.send(message)
+
+def log(message, level=INFO):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    color = COLORS.get(level, "")
+    reset = COLORS[RESET]
+    print(f"{color}[{timestamp}] [{level}]{reset} {message}")
+
+def format_packet(packet):
+    status = packet["status"]
+    length = packet["length"]
+    signal = packet["signal"].hex(" ")
+    return f"Status: {status}, Length: {length}, Signal: {signal}"
 
 # ==============================
 # Start
