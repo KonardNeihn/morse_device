@@ -112,7 +112,7 @@ void receivePackage(unsigned long *last_received) {
   if (bytesRead != sizeof(incoming.status)) {
     Serial.printf("FEHLER: Nur %d von %d Bytes von Package.status empfangen!\n", bytesRead, sizeof(incoming.status));
     client.stop();
-    state = TCP_CONNECT;
+    state = DNS_RESOLVE;
     return;
   }
   *last_received = millis();
@@ -123,7 +123,7 @@ void receivePackage(unsigned long *last_received) {
     if (millis() - *last_received > TCP_TIMEOUT) {
       Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
       client.stop();
-      state = TCP_CONNECT;
+      state = DNS_RESOLVE;
       return;
     }
   }
@@ -134,7 +134,7 @@ void receivePackage(unsigned long *last_received) {
   if (bytesRead != sizeof(size)) {
     Serial.printf("FEHLER: Nur %d von %d Bytes von Package.size empfangen!\n", bytesRead, sizeof(size));
     client.stop();
-    state = TCP_CONNECT;
+    state = DNS_RESOLVE;
     return;
   }
   incoming.size = (uint16_t(size[0]) << 8) | size[1];
@@ -149,7 +149,7 @@ void receivePackage(unsigned long *last_received) {
       if (bytesRead != sizeof(signal)) {
         Serial.printf("FEHLER: Nur %d von %d Bytes von Package.payload empfangen!\n", bytesRead, sizeof(signal));
         client.stop();
-        state = TCP_CONNECT;
+        state = DNS_RESOLVE;
         return;
       }
       *last_received = millis();
@@ -162,14 +162,16 @@ void receivePackage(unsigned long *last_received) {
     if (millis() - *last_received > TCP_TIMEOUT) {
       Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
       client.stop();
-      state = TCP_CONNECT;
+      state = DNS_RESOLVE;
       return;
     }
   }
   Serial.printf("\n");
 
-  if (incoming.status == 0)
+  if (incoming.status == 0) {
     Serial.printf("keep alive got\n");
+    return;
+  }
 
   if (!putPackageIntoQueue(printQueue, incoming))
     Serial.println("printQueue overflow");
@@ -191,7 +193,7 @@ void receivePackage(unsigned long *last_received) {
   confirmation.payload.push_back(0b11111111);
   confirmation.size = confirmation.payload.size();
 
-  if (!putPackageIntoQueue(sendQueue, incoming))
+  if (!putPackageIntoQueue(sendQueue, confirmation))
     Serial.println("sendQueue overflow");
 }
 
@@ -212,7 +214,7 @@ void sendPackage() {
   if (bytesSent != sizeof(header)) {
     Serial.printf("FEHLER: Nur %d von %d Bytes von header gesendet!\n", bytesSent, sizeof(header));
     client.stop();
-    state = TCP_CONNECT;
+    state = DNS_RESOLVE;
     return;
   }
 
@@ -221,7 +223,7 @@ void sendPackage() {
   if (bytesSent != outgoing.payload.size()) {
     Serial.printf("FEHLER: Nur %d von %d Bytes von payload gesendet!\n", bytesSent, outgoing.payload.size());
     client.stop();
-    state = TCP_CONNECT;
+    state = DNS_RESOLVE;
     return;
   }
 }

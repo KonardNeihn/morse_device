@@ -1,4 +1,5 @@
 /*
+ * server zeit bei logs
  * server soll bei ctrl c alle threads schließen
  * rickroll einabauen
  */
@@ -209,6 +210,7 @@ void ConnectionTask(void *pvParameters) {
             // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
             Serial.println("TCP connected");
           } else {
+            state = DNS_RESOLVE;
             Serial.println("TCP failed");
             vTaskDelay(2000 / portTICK_PERIOD_MS);
           }
@@ -227,7 +229,7 @@ void ConnectionTask(void *pvParameters) {
           lost_count++;
           if (lost_count > 3) {  // 3 mal hintereinander
             Serial.println("TCP lost, reconnecting...");
-            state = TCP_CONNECT;
+            state = DNS_RESOLVE;
             lost_count = 0;
           }
         } else {
@@ -253,7 +255,7 @@ void ConnectionTask(void *pvParameters) {
 
         if (keep_alive_counter >= 4) {
           Serial.println("TCP not answering keep alive, reconnecting...");
-          state = TCP_CONNECT;
+          state = DNS_RESOLVE;
           keep_alive_counter = 1;
         }
         break;
@@ -273,8 +275,7 @@ void InputTask(void *pvParameters) {
 
     // ein neues Package anfangen
     if (digitalRead(BUTTON) == false) {  // button pressed
-      // wichtig, dass package erst hier erstellt, damit in queue pointer auf einzigartiges Object kommt
-      package.status = 1;
+      last_pressed = millis();
       // ein packet aufnehmen, bis lange nichts mehr gedrückt
       while (millis() - last_pressed < RECORDING_TIMEOUT_MS) {
         Serial.printf("Time until send: %d \n", RECORDING_TIMEOUT_MS + last_pressed - millis());
@@ -301,6 +302,7 @@ void InputTask(void *pvParameters) {
 
         package.payload.clear();
       } else {
+        package.status = 1;
         if (!putPackageIntoQueue(sendQueue, package))
           Serial.println("sendQueue overflow");
         package.payload.clear();
@@ -404,6 +406,13 @@ void PrintTask(void *pvParameters) {
         }
       }
       mask >>= 1;
+    }
+    if (index != 0) {
+      print(top_line, bottom_line);
+      memset(top_line, 0, sizeof(top_line));
+      memset(bottom_line, 0, sizeof(bottom_line));
+      writing_top_line = true;
+      index = 0;
     }
   }
 }
