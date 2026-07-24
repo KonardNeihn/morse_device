@@ -7,23 +7,29 @@ from datetime import datetime
 from enum import Enum
 import sys
 
-class LogLevel(Enum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-
-# ANSI-Farbcodes
-COLORS = {
-    LogLevel.INFO: "\033[32m",    # Grün
-    LogLevel.WARNING: "\033[33m", # Gelb
-    LogLevel.ERROR: "\033[31m",   # Rot
-    "RESET": "\033[0m",    # Reset
-}
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
 TCP_PORT = 5100
 BUFFER_SIZE = 5
+
+# ANSI-Farbcodes
+COLORS = {
+    "INFO": "\033[32m",      # Grün
+    "WARNING": "\033[33m",   # Gelb
+    "ERROR": "\033[31m",     # Rot
+    "RESET": "\033[0m",      # Reset
+}
+
+class LogLevel(Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+# Definiere globale Variablen für die Log-Levels
+INFO = LogLevel.INFO
+WARNING = LogLevel.WARNING
+ERROR = LogLevel.ERROR
 
 running = True
 
@@ -163,7 +169,7 @@ def broadcast (message, sender):
             if client != sender:
                 client.send(message)
 
-def log(message, level=LogLevel.INFO):
+def log(message, level=INFO):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     color = COLORS.get(level, "")
     reset = COLORS["RESET"]
