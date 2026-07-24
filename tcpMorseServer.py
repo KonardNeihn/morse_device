@@ -3,6 +3,35 @@ import threading
 import queue
 import struct
 import select
+from datetime import datetime
+from enum import Enum
+
+
+class LogLevel(Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+# ANSI-Farbcodes
+COLORS = {
+    INFO: "\033[32m",    # Grün
+    WARNING: "\033[33m", # Gelb
+    ERROR: "\033[31m",   # Rot
+    RESET: "\033[0m",    # Reset
+}
+
+
+def log(message, level=INFO):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    color = COLORS.get(level, "")
+    reset = COLORS[RESET]
+    print(f"{color}[{timestamp}] [{level}]{reset} {message}")
+
+def format_packet(packet):
+    status = packet["status"]
+    length = packet["length"]
+    signal = packet["signal"].hex(" ")
+    return f"Status: {status}, Length: {length}, Signal: {signal}"
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
@@ -22,7 +51,7 @@ def main():
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
 
-    print(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}")
+    log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", INFO)
 
     while True:
         try:
@@ -39,7 +68,7 @@ def main():
                 clients.append(client)
 
         except Exception as e:
-            print(f"Error: e")
+            log(f"Error: ({type(e).__name__}): {e}", ERROR)
 
 
 # ==============================
@@ -61,7 +90,7 @@ class Clienthandler:
         self.send_thread.start()
 
     def receive_loop(self):
-        print(f"New client: {self.client_address}")
+        log(f"New client: {self.client_address}", INFO)
         while self.running:
             try:
                 ready, _, _ = select.select([self.client_socket], [], [], 1.0)
@@ -72,32 +101,24 @@ class Clienthandler:
                 # Zuerst status und length lesen (3 Bytes)
                 header = self.client_socket.recv(3)
                 if not header or len(header) < 3:
-                    print(f"Unvollständiger Header von {self.client_address}.")
+                    log(f"Unvollständiger Header von {self.client_address}", ERROR)
                     break
-
-                print(list(header))
 
                 status = header[0]
                 length = (header[1] << 8) | header[2]
-
-                print(f"Empfange Paket: status={status}, length={length} von {self.client_address}")
-
-                # Dann die signal-Daten lesen (length Bytes)
-
-                #signal_data = b""
-                #while len(signal_data) < length:
-                #    chunk = sock.recv(length - len(signal_data))
-                #signal_data += chunk
+                
+                log(f"Empfange Paket: status={status}, length={length} von {self.client_address}", INFO)
 
                 signal_data = self.client_socket.recv(length)
                 if not signal_data or len(signal_data) < length:
-                    print(f"Unvollständige Payload von {self.client_address}. Erwartet: {length}, erhalten: {len(signal_data)}")
+                    log(f"Unvollständige Payload von {self.client_address}. Erwartet: {length}, erhalten: {len(signal_data)}", ERROR)
                     break
-
-                print(f"Paket erfolgreich empfangen: {signal_data}")
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
+
+                log(f"Paket from: {self.client_address} {format_packet(packet)}", INFO)
+
 
                 # keep alive zurück senden
                 if status == 0:
@@ -113,9 +134,9 @@ class Clienthandler:
                 broadcast(packet, self)
 
             except Exception as e:
-                print(f"Error while receiving: {e} with: {self.client_address}")
+                log(f"Error while receiving: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
 
-        print(f"Client disconnected: {self.client_address}")
+        log(f"Client disconnected: {self.client_address}", WARNING)
         self.client_socket.close()
         self.running = False
         self.out_queue.put(None)
@@ -141,7 +162,7 @@ class Clienthandler:
                     break
                 self.client_socket.sendall(packet)
             except Exception as e:
-                print(f"Error while sending: {e} with: {self.client_address}")
+                log(f"Error while sending: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
 
 
 # ==============================
