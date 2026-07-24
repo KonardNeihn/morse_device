@@ -156,7 +156,7 @@ class Clienthandler:
                 if packet is None:
                     break
                 self.client_socket.sendall(packet)
-                log(f"Package sent: {self.client_address} {format_packet(packet)}", INFO)
+                log(f"Package sent to: {self.client_address}", INFO)
             except Exception as e:
                 log(f"Error while sending: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
 
