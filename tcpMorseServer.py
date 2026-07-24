@@ -15,7 +15,8 @@ BUFFER_SIZE = 5
 
 # ANSI-Farbcodes
 COLORS = {
-    "INFO": "\033[32m",      # Grün
+    "INFO": "\033[37m",      # Grün
+    "GOOD INFO": "\033[32m", # Grün
     "WARNING": "\033[33m",   # Gelb
     "ERROR": "\033[31m",     # Rot
     "RESET": "\033[0m",      # Reset
@@ -23,11 +24,13 @@ COLORS = {
 
 class LogLevel(Enum):
     INFO = "INFO"
+    GOOD_INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
 
 # Definiere globale Variablen für die Log-Levels
 INFO = LogLevel.INFO
+GOOD_INFO = LogLevel.GOOD_INFO
 WARNING = LogLevel.WARNING
 ERROR = LogLevel.ERROR
 
@@ -45,7 +48,7 @@ def main():
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
 
-    log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", INFO)
+    log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", GOOD_INFO)
 
     while True:
         try:
@@ -84,7 +87,7 @@ class Clienthandler:
         self.send_thread.start()
 
     def receive_loop(self):
-        log(f"New client: {self.client_address}", INFO)
+        log(f"New client: {self.client_address}", GOOD_INFO)
         while self.running:
             try:
                 ready, _, _ = select.select([self.client_socket], [], [], 1.0)
