@@ -17,7 +17,7 @@ COLORS = {
     LogLevel.INFO: "\033[32m",    # Grün
     LogLevel.WARNING: "\033[33m", # Gelb
     LogLevel.ERROR: "\033[31m",   # Rot
-    LogLevel.RESET: "\033[0m",    # Reset
+    "RESET": "\033[0m",    # Reset
 }
 
 HOST_NAME = socket.gethostname()
@@ -166,7 +166,7 @@ def broadcast (message, sender):
 def log(message, level=LogLevel.INFO):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     color = COLORS.get(level, "")
-    reset = COLORS[RESET]
+    reset = COLORS["RESET"]
     print(f"{color}[{timestamp}] [{level}]{reset} {message}")
 
 def format_packet(packet):
