@@ -173,12 +173,15 @@ void receivePackage(unsigned long *last_received) {
     return;
   }
 
-  if (!putPackageIntoQueue(printQueue, incoming))
-    Serial.println("printQueue overflow");
   if (!putPackageIntoQueue(playbackQueue, incoming))
     Serial.println("playbackQueue overflow");
 
+  // confirmation package
   if (incoming.status == 2)
+    return;
+
+  // got my own server check message
+  if (incoming.status == 3)
     return;
 
   // send receiving confirmation

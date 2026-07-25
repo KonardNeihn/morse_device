@@ -1,5 +1,5 @@
 /*
- * server warum disconnected bei timeout?
+ * nicht jedes mal dns resolve. vllt nur jedes 5. mal?
  * rickroll einabauen
  */
 
@@ -24,7 +24,7 @@ const int port = 5100;                           // Port des Servers Senden
 #define RECORDING_TIMEOUT_MS 5000
 #define TCP_TIMEOUT 10000
 #define KEEP_ALIVE_INTERVAL_MS 20000
-#define QUEUE_SIZE 50
+#define QUEUE_SIZE 10
 #define SOUND_FREQ 200
 
 #define TX_PIN 17
@@ -47,13 +47,8 @@ enum ConnectionState {
   RUNNING
 };
 
-enum ReceiveState {
-  WAIT_FOR_HEADER,
-  WAIT_FOR_PAYLOAD
-};
-
 struct Package {
-  uint8_t status; // 0 -> keep alive, 1 -> normal package, 2 -> confirm package received
+  uint8_t status; // 0 -> keep alive, 1 -> normal package, 2 -> confirm package received, 3 -> server_check_mode (send back)
   uint16_t size;  // reicht für 87 Minuten
   std::vector<uint8_t> payload; // dynamische größe
 };
@@ -293,19 +288,18 @@ void InputTask(void *pvParameters) {
       // fertiges Package
       package.size = package.payload.size();
       if (SELF_CHECK_MODE) {
-
         if (!putPackageIntoQueue(playbackQueue, package))
           Serial.println("playbackQueue overflow");
-        if (!putPackageIntoQueue(printQueue, package))
-          Serial.println("printQueue overflow");
-
-        package.payload.clear();
+      } else if (SERVER_CHECK_MODE) {
+        package.status = 3;
+        if (!putPackageIntoQueue(sendQueue, package))
+          Serial.println("sendQueue overflow");
       } else {
         package.status = 1;
         if (!putPackageIntoQueue(sendQueue, package))
           Serial.println("sendQueue overflow");
-        package.payload.clear();
       }
+      package.payload.clear();
     }
   }
 }
@@ -318,7 +312,7 @@ void PlaybackTask(void *pvParameters) {
     vTaskDelay(100 / portMAX_DELAY);  // damit nicht gepollt wird
 
     // damit das status indizieren mit der LED aus dem anderen thread nicht überschrieben wird
-    if (state != RUNNING) 
+    if (state != RUNNING && SELF_CHECK_MODE == false) 
       continue;
 
     // wenn ein/kein package in der leitung ist
@@ -352,6 +346,8 @@ void PlaybackTask(void *pvParameters) {
         vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
       }
     }
+    if (!putPackageIntoQueue(printQueue, package))
+      Serial.println("printQueue overflow");
   }
 }
 

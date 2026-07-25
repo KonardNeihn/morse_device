@@ -148,6 +148,11 @@ class Clienthandler:
                     self.send(response)
                     continue
 
+                # server check message zurück senden
+                if status == 3:
+                    self.send(packet)
+                    continue
+
                 # Paket an alle anderen Clients weiterleiten
                 broadcast(packet, self)
 
