@@ -197,7 +197,7 @@ void ConnectionTask(void *pvParameters) {
           Serial.println("Connecting TCP");
           client.stop();
           if (client.connect(server_ip, port)) {
-            client.setNoDelay(false);
+            client.setNoDelay(true);
             //client.setTimeout(5);  // z.B. 5ms
             state = RUNNING;
             last_received = millis();

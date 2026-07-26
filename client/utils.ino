@@ -104,7 +104,7 @@ void receivePackage(unsigned long *last_received) {
   if (!client.available())
     return;
 
-  Package incoming; // wichtig, dass erst hier erstellt, damit in queue pointer auf einzigartiges Object kommt
+  Package incoming;
   uint16_t bytes_to_read;
 
   // read status

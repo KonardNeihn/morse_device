@@ -59,7 +59,7 @@ def main():
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 20)      # nach 20 s Inaktivität
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)     # alle 10 s erneut
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)        # 3 Versuche
-                client_socket.setblocking(True)
+                client_socket.setblocking(False)
             
             except socket.timeout:
                 continue
