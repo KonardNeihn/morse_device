@@ -207,24 +207,19 @@ void sendPackage() {
     return;
   getPackageFromQueue(sendQueue, outgoing);
 
-  // Create & Send Header = status + length
-  uint8_t header[3];
-  header[0] = outgoing.status;
-  header[1] = (outgoing.size >> 8) & 0xFF;   // Hochwertiges Byte von size
-  header[2] = outgoing.size & 0xFF;          // Niedrigwertiges Byte von size
-  
-  size_t bytesSent = client.write(header, sizeof(header));
-  if (bytesSent != sizeof(header)) {
-    Serial.printf("FEHLER: Nur %d von %d Bytes von header gesendet!\n", bytesSent, sizeof(header));
-    client.stop();
-    state = DNS_RESOLVE;
-    return;
-  }
+  // gesamtes packet erzeugen
+  std::vector<uint8_t> packet;
+  // header anhängen
+  packet.push_back(outgoing.status);
+  packet.push_back((outgoing.size >> 8) & 0xFF);  // Hochwertiges Byte von size
+  packet.push_back(outgoing.size & 0xFF);         // Niedrigwertiges Byte von size
+  // payload anhängen
+  packet.insert(packet.end(), outgoing.payload.begin(), outgoing.payload.end());
 
-  // Send signal
-  bytesSent = client.write(outgoing.payload.data(), outgoing.payload.size());
-  if (bytesSent != outgoing.payload.size()) {
-    Serial.printf("FEHLER: Nur %d von %d Bytes von payload gesendet!\n", bytesSent, outgoing.payload.size());
+  // Send package
+  size_t bytesSent = client.write(packet.data(), packet.size());
+  if (bytesSent != packet.size()) {
+    Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, packet.size());
     client.stop();
     state = DNS_RESOLVE;
     return;

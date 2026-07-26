@@ -128,11 +128,11 @@ void CheckerTask(void *pvParameters) {
         break;
 
       case RUNNING:
-        Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
-        //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
-        //char stats[512];
-        //vTaskGetRunTimeStats(stats);
-        //Serial.printf("stats: %s", stats);
+        //Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
+        Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+        char stats[512];
+        vTaskGetRunTimeStats(stats);
+        Serial.printf("stats: %s", stats);
         break;
     }
   }
