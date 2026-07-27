@@ -120,6 +120,15 @@ void CheckerTask(void *pvParameters) {
     testMosfet();  // contains 100ms pause
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+        /*|            RSSI | Qualität      |
+          | --------------: | ------------- |
+          |       > -50 dBm | ausgezeichnet |
+          | -50 bis -60 dBm | sehr gut      |
+          | -60 bis -67 dBm | gut           |
+          | -67 bis -70 dBm | ausreichend   |
+          | -70 bis -80 dBm | schwach       |
+          |       < -80 dBm | kritisch      |*/
   
     switch (state) {
       case WIFI_CONNECT:
@@ -127,10 +136,12 @@ void CheckerTask(void *pvParameters) {
         break;
       
       case DNS_RESOLVE:
+        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
         showResolvingDNS();
         break;
 
       case TCP_CONNECT:
+        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
         showConnectTCP();
         break;
 
@@ -141,14 +152,6 @@ void CheckerTask(void *pvParameters) {
         //vTaskGetRunTimeStats(stats);
         //Serial.printf("stats: %s\n", stats);
         Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
-        /*|            RSSI | Qualität      |
-          | --------------: | ------------- |
-          |       > -50 dBm | ausgezeichnet |
-          | -50 bis -60 dBm | sehr gut      |
-          | -60 bis -67 dBm | gut           |
-          | -67 bis -70 dBm | ausreichend   |
-          | -70 bis -80 dBm | schwach       |
-          |       < -80 dBm | kritisch      |*/
         //uint8_t mac[6];
         //WiFi.macAddress(mac);
         //Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -173,14 +176,23 @@ void ConnectionTask(void *pvParameters) {
     switch (state) {
 
       case WIFI_CONNECT:
-
         if (was_connected) {
-          WiFi.reconnect();           // statt WiFi OFF/ON
+          vTaskDelay(1000 / portTICK_PERIOD_MS);
+          if (WiFi.status() == WL_CONNECTED) {
+            state = DNS_RESOLVE;
+            Serial.println("WiFi alone");
+            break;
+          }
 
+          Serial.println("reconnecting Wifi");
+          WiFi.reconnect();           // statt WiFi OFF/ON
           if (WiFi.waitForConnectResult() == WL_CONNECTED) {
             state = DNS_RESOLVE;
             Serial.println("WiFi reconnected");
-          } 
+            break;
+          } else {
+            Serial.println("couldnt reconnect wifi");
+          }
         } 
 
         connectWifi(ssid, password);
