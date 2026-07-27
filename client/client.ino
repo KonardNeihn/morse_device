@@ -24,6 +24,7 @@ const int port = 5100;                           // Port des Servers Senden
 #define RECORDING_TIMEOUT_MS 5000
 #define TCP_TIMEOUT 30000
 #define KEEP_ALIVE_INTERVAL_MS 5000
+#define MAX_CONNECT_RETRIES 5
 #define QUEUE_SIZE 10
 #define SOUND_FREQ 200
 
@@ -162,8 +163,7 @@ void CheckerTask(void *pvParameters) {
 
 void ConnectionTask(void *pvParameters) {
   bool was_connected = false;
-  int dns_fail_counter = 0;
-  int tcp_lost_counter = 0;
+  int connect_retry_counter = 0;
   unsigned long last_received; 
   int keep_alive_counter = 1;
 
@@ -227,15 +227,15 @@ void ConnectionTask(void *pvParameters) {
         if (WiFi.hostByName(server_address, server_ip) && server_ip != IPAddress(0,0,0,0)) {
           Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
           state = TCP_CONNECT;
-          dns_fail_counter = 0;
+          connect_retry_counter = 0;
         } else {
-          Serial.println("DNS failed or invalid");
-          dns_fail_counter++;
+          connect_retry_counter++;
+          Serial.printf("DNS failed or invalid (%d/%d)\n", connect_retry_counter, MAX_CONNECT_RETRIES);
           vTaskDelay(50 / portTICK_PERIOD_MS);
         }
 
-        if (dns_fail_counter >= 5) {
-          dns_fail_counter = 0;
+        if (connect_retry_counter > MAX_CONNECT_RETRIES) {
+          connect_retry_counter = 0;
           state = WIFI_CONNECT;
           Serial.println("DNS failed, returning to WIFI_CONNECT");
         }
@@ -257,17 +257,17 @@ void ConnectionTask(void *pvParameters) {
             //client.setTimeout(5);  // z.B. 5ms
             state = RUNNING;
             last_received = millis();
-            tcp_lost_counter = 0;
+            connect_retry_counter = 0;
             // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
             Serial.println("TCP connected");
           } else {
-            Serial.println("TCP failed");
-            tcp_lost_counter++;
+            connect_retry_counter++;
+            Serial.printf("TCP failed (%d/%d)", connect_retry_counter, MAX_CONNECT_RETRIES);
             vTaskDelay(2000 / portTICK_PERIOD_MS);
           }
 
-          if (tcp_lost_counter >= 5) {
-            tcp_lost_counter = 0;
+          if (connect_retry_counter > MAX_CONNECT_RETRIES) {
+            connect_retry_counter = 0;
             state = DNS_RESOLVE;
             Serial.println("TCP failed, returning to DNS_RESOLVE");
           }
@@ -282,15 +282,15 @@ void ConnectionTask(void *pvParameters) {
         }
 
         if (!client.connected()) {
-          tcp_lost_counter++;
+          connect_retry_counter++;
           vTaskDelay(100 / portTICK_PERIOD_MS);
-          if (tcp_lost_counter > 3) {  // 3 mal hintereinander
+          if (connect_retry_counter > 3) {  // 3 mal hintereinander
             Serial.println("TCP lost, reconnecting...");
             state = DNS_RESOLVE;
-            tcp_lost_counter = 0;
+            connect_retry_counter = 0;
           }
         } else {
-          tcp_lost_counter = 0;
+          connect_retry_counter = 0;
         }
 
         receivePackage(&last_received);
@@ -306,7 +306,7 @@ void ConnectionTask(void *pvParameters) {
           keep_alive.size = keep_alive.payload.size();
           if (!putPackageIntoQueue(sendQueue, keep_alive))
             Serial.println("sendQueue overflow");
-          Serial.printf("keep alive sent\n");
+          Serial.printf("keep alive sent (%d)\n", keep_alive_counter);
           keep_alive_counter++;
         }
         if (millis() - last_received < KEEP_ALIVE_INTERVAL_MS) {
