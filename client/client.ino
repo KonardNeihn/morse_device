@@ -22,8 +22,8 @@ const int port = 5100;                           // Port des Servers Senden
 // Schräubchen zum drehen
 #define SAMPLING_RATE_MS 10  // eine Abtastung alle x ms
 #define RECORDING_TIMEOUT_MS 5000
-#define TCP_TIMEOUT 10000
-#define KEEP_ALIVE_INTERVAL_MS 20000
+#define TCP_TIMEOUT 30000
+#define KEEP_ALIVE_INTERVAL_MS 5000
 #define QUEUE_SIZE 10
 #define SOUND_FREQ 200
 
@@ -90,6 +90,13 @@ void setup() {
   playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
   printQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
 
+  WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        Serial.printf("WiFi disconnected, reason: %d\n",
+                      info.wifi_sta_disconnected.reason);
+    }
+  });
+
   xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(InputTask, "Input Task", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(PlaybackTask, "Output Task", 4096, NULL, 1, NULL, 1);
@@ -129,17 +136,31 @@ void CheckerTask(void *pvParameters) {
 
       case RUNNING:
         //Serial.printf("queues (size:%d): send %d play %d print %d \n", QUEUE_SIZE, uxQueueMessagesWaiting(sendQueue), uxQueueMessagesWaiting(playbackQueue), uxQueueMessagesWaiting(printQueue));
-        Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
-        char stats[512];
-        vTaskGetRunTimeStats(stats);
-        Serial.printf("stats: %s", stats);
+        //Serial.printf("Heap free: %u Min heap: %u \n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+        //char stats[512];
+        //vTaskGetRunTimeStats(stats);
+        //Serial.printf("stats: %s\n", stats);
+        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+        /*|            RSSI | Qualität      |
+          | --------------: | ------------- |
+          |       > -50 dBm | ausgezeichnet |
+          | -50 bis -60 dBm | sehr gut      |
+          | -60 bis -67 dBm | gut           |
+          | -67 bis -70 dBm | ausreichend   |
+          | -70 bis -80 dBm | schwach       |
+          |       < -80 dBm | kritisch      |*/
+        //uint8_t mac[6];
+        //WiFi.macAddress(mac);
+        //Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         break;
     }
   }
 }
 
 void ConnectionTask(void *pvParameters) {
-  static int lost_count = 0;
+  bool was_connected = false;
+  int dns_fail_counter = 0;
+  int tcp_lost_counter = 0;
   unsigned long last_received; 
   int keep_alive_counter = 1;
 
@@ -152,15 +173,29 @@ void ConnectionTask(void *pvParameters) {
     switch (state) {
 
       case WIFI_CONNECT:
+
+        if (was_connected) {
+          WiFi.reconnect();           // statt WiFi OFF/ON
+
+          if (WiFi.waitForConnectResult() == WL_CONNECTED) {
+            state = DNS_RESOLVE;
+            Serial.println("WiFi reconnected");
+          } 
+        } 
+
         connectWifi(ssid, password);
-        if (state == DNS_RESOLVE) 
+        if (state == DNS_RESOLVE) {
+          was_connected = true;
           break;
+        }
         Serial.printf("Couldn't connect to %s\n", ssid);
 
         // if connecting to ssid2 failed
         connectWifi(ssid2, password2);
-        if (state == DNS_RESOLVE) 
+        if (state == DNS_RESOLVE) {
+          was_connected = true;
           break;
+        }
         Serial.printf("Couldn't connect to %s\n", ssid2);
         
         // a good restart often helps reconnecting somehow
@@ -175,13 +210,22 @@ void ConnectionTask(void *pvParameters) {
           break;
         }
 
+        server_ip = IPAddress(0, 0, 0, 0);
         Serial.println("Resolving DNS");
-        if (WiFi.hostByName(server_address, server_ip)) {
+        if (WiFi.hostByName(server_address, server_ip) && server_ip != IPAddress(0,0,0,0)) {
           Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
           state = TCP_CONNECT;
+          dns_fail_counter = 0;
         } else {
-          Serial.println("DNS failed");
+          Serial.println("DNS failed or invalid");
+          dns_fail_counter++;
+          vTaskDelay(50 / portTICK_PERIOD_MS);
+        }
+
+        if (dns_fail_counter >= 5) {
+          dns_fail_counter = 0;
           state = WIFI_CONNECT;
+          Serial.println("DNS failed, returning to WIFI_CONNECT");
         }
 
         break;
@@ -197,16 +241,23 @@ void ConnectionTask(void *pvParameters) {
           Serial.println("Connecting TCP");
           client.stop();
           if (client.connect(server_ip, port)) {
-            client.setNoDelay(true);
+            client.setNoDelay(false);
             //client.setTimeout(5);  // z.B. 5ms
             state = RUNNING;
             last_received = millis();
+            tcp_lost_counter = 0;
             // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
             Serial.println("TCP connected");
           } else {
-            state = DNS_RESOLVE;
             Serial.println("TCP failed");
+            tcp_lost_counter++;
             vTaskDelay(2000 / portTICK_PERIOD_MS);
+          }
+
+          if (tcp_lost_counter >= 5) {
+            tcp_lost_counter = 0;
+            state = DNS_RESOLVE;
+            Serial.println("TCP failed, returning to DNS_RESOLVE");
           }
         }
         break;
@@ -218,21 +269,24 @@ void ConnectionTask(void *pvParameters) {
           break;
         }
 
-        static int lost_count = 0;
         if (!client.connected()) {
-          lost_count++;
-          if (lost_count > 3) {  // 3 mal hintereinander
+          tcp_lost_counter++;
+          vTaskDelay(100 / portTICK_PERIOD_MS);
+          if (tcp_lost_counter > 3) {  // 3 mal hintereinander
             Serial.println("TCP lost, reconnecting...");
             state = DNS_RESOLVE;
-            lost_count = 0;
+            tcp_lost_counter = 0;
           }
         } else {
-          lost_count = 0;
+          tcp_lost_counter = 0;
         }
 
         receivePackage(&last_received);
+        if (state != RUNNING)
+          break;
         sendPackage();
 
+        // keep alive senden
         if (millis() - last_received > KEEP_ALIVE_INTERVAL_MS * keep_alive_counter) {
           Package keep_alive;
           keep_alive.status = 0;
@@ -247,7 +301,7 @@ void ConnectionTask(void *pvParameters) {
           keep_alive_counter = 1;
         }
 
-        if (keep_alive_counter >= 4) {
+        if (millis() - last_received > TCP_TIMEOUT) {
           Serial.println("TCP not answering keep alive, reconnecting...");
           state = DNS_RESOLVE;
           keep_alive_counter = 1;

@@ -60,10 +60,13 @@ void testMosfet() {
 }
 
 void connectWifi(const char ssid[], const char password[]) {
+  client.stop();
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
   vTaskDelay(100 / portTICK_PERIOD_MS);
   WiFi.mode(WIFI_STA);
+  vTaskDelay(100 / portTICK_PERIOD_MS);
+  WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
 
