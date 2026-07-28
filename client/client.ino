@@ -1,5 +1,4 @@
 /*
- * nicht jedes mal dns resolve. vllt nur jedes 5. mal?
  * rickroll einabauen
  */
 
@@ -7,6 +6,15 @@
 #include <HardwareSerial.h>
 #include <esp_wifi.h>
 #include <vector>
+
+// for lwip
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#include <lwip/inet.h>
+#include <errno.h>
+//
+#include "lwip/tcp.h"
+#include "lwip/ip_addr.h"
 
 // WLAN-Zugangsdaten
 const char *ssid = "GameOfWlan";
@@ -49,9 +57,9 @@ enum ConnectionState {
 };
 
 struct Package {
-  uint8_t status; // 0 -> keep alive, 1 -> normal package, 2 -> confirm package received, 3 -> server_check_mode (send back)
-  uint16_t size;  // reicht für 87 Minuten
-  std::vector<uint8_t> payload; // dynamische größe
+  uint8_t status;                // 0 -> keep alive, 1 -> normal package, 2 -> confirm package received, 3 -> server_check_mode (send back)
+  uint16_t size;                 // reicht für 87 Minuten
+  std::vector<uint8_t> payload;  // dynamische größe
 };
 
 ConnectionState state = WIFI_CONNECT;
@@ -68,7 +76,7 @@ QueueHandle_t sendQueue;      // Kommunikationsschnittstelle von InputTask -> tc
 QueueHandle_t playbackQueue;  // Kommunikationsschnittstelle von sortingTask -> outputTask
 QueueHandle_t printQueue;     // Kommunikationsschnittstelle von sortingTask -> printTask
 
-WiFiClient client;
+int sock = -1;
 HardwareSerial printer(2);  // use UART2 (GPIO17 TX, GPIO16 RX)
 
 void setup() {
@@ -87,14 +95,16 @@ void setup() {
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
-  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
-  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));
+  sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package *));
+  playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package *));
+  printQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package *));
 
   WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+    Serial.printf("Event: %s (%d)\n", wifiEventName(event), event);
+
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        Serial.printf("WiFi disconnected, reason: %d\n",
-                      info.wifi_sta_disconnected.reason);
+      auto reason = info.wifi_sta_disconnected.reason;
+      Serial.printf("Disconnected: %s (%d)\n", disconnectReason(reason), reason);
     }
   });
 
@@ -103,6 +113,8 @@ void setup() {
   xTaskCreatePinnedToCore(PlaybackTask, "Output Task", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(CheckerTask, "Checker Task", 4096, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(PrintTask, "Print Task", 4096, NULL, 2, NULL, 1);
+
+  Serial.printf("Arduino ESP32 Core: %s\n", ESP.getSdkVersion());
 
   //vTaskDelete(NULL);  // Beendet den Arduino-Loop-Task
 }
@@ -122,7 +134,7 @@ void CheckerTask(void *pvParameters) {
     checkPins();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-        /*|            RSSI | Qualität      |
+    /*|            RSSI | Qualität      |
           | --------------: | ------------- |
           |       > -50 dBm | ausgezeichnet |
           | -50 bis -60 dBm | sehr gut      |
@@ -130,19 +142,19 @@ void CheckerTask(void *pvParameters) {
           | -67 bis -70 dBm | ausreichend   |
           | -70 bis -80 dBm | schwach       |
           |       < -80 dBm | kritisch      |*/
-  
+
     switch (state) {
       case WIFI_CONNECT:
         showSearchingWiFi();
         break;
-      
+
       case DNS_RESOLVE:
-        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+        //Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
         showResolvingDNS();
         break;
 
       case TCP_CONNECT:
-        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+        //Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
         showConnectTCP();
         break;
 
@@ -152,7 +164,9 @@ void CheckerTask(void *pvParameters) {
         //char stats[512];
         //vTaskGetRunTimeStats(stats);
         //Serial.printf("stats: %s\n", stats);
-        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+        //Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+        if (WiFi.RSSI() < -70)
+          showBadSignal();
         //uint8_t mac[6];
         //WiFi.macAddress(mac);
         //Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -163,9 +177,7 @@ void CheckerTask(void *pvParameters) {
 
 void ConnectionTask(void *pvParameters) {
   bool was_connected = false;
-  int connect_retry_counter = 0;
-  unsigned long last_received; 
-  int keep_alive_counter = 1;
+  int retry_counter = 0;
 
   while (true) {
     if (SELF_CHECK_MODE) {
@@ -180,12 +192,12 @@ void ConnectionTask(void *pvParameters) {
           vTaskDelay(1000 / portTICK_PERIOD_MS);
           if (WiFi.status() == WL_CONNECTED) {
             state = DNS_RESOLVE;
-            Serial.println("WiFi alone");
+            Serial.println("WiFi reconnected alone");
             break;
           }
 
-          Serial.println("reconnecting Wifi");
-          WiFi.reconnect();           // statt WiFi OFF/ON
+          Serial.println("reconnecting Wifi...");
+          WiFi.reconnect();  // statt WiFi OFF/ON
           if (WiFi.waitForConnectResult() == WL_CONNECTED) {
             state = DNS_RESOLVE;
             Serial.println("WiFi reconnected");
@@ -193,23 +205,22 @@ void ConnectionTask(void *pvParameters) {
           } else {
             Serial.println("couldnt reconnect wifi");
           }
-        } 
+        }
 
-        connectWifi(ssid, password);
-        if (state == DNS_RESOLVE) {
+        // connect to first wifi
+        if (connectWifi(ssid, password)) {
+          state = DNS_RESOLVE;
           was_connected = true;
           break;
         }
-        Serial.printf("Couldn't connect to %s\n", ssid);
 
         // if connecting to ssid2 failed
-        connectWifi(ssid2, password2);
-        if (state == DNS_RESOLVE) {
+        if (connectWifi(ssid2, password2)) {
+          state = DNS_RESOLVE;
           was_connected = true;
           break;
         }
-        Serial.printf("Couldn't connect to %s\n", ssid2);
-        
+
         // a good restart often helps reconnecting somehow
         Serial.printf("Restarting...\n");
         ESP.restart();
@@ -217,110 +228,63 @@ void ConnectionTask(void *pvParameters) {
 
       case DNS_RESOLVE:
         if (WiFi.status() != WL_CONNECTED) {
-          Serial.println("WiFi lost");
           state = WIFI_CONNECT;
           break;
         }
-
         server_ip = IPAddress(0, 0, 0, 0);
-        Serial.println("Resolving DNS");
-        if (WiFi.hostByName(server_address, server_ip) && server_ip != IPAddress(0,0,0,0)) {
+        Serial.println("Resolving DNS...");
+        if (WiFi.hostByName(server_address, server_ip) && server_ip != IPAddress(0, 0, 0, 0)) {
           Serial.printf("Server IP: %s\n", server_ip.toString().c_str());
           state = TCP_CONNECT;
-          connect_retry_counter = 0;
+          retry_counter = 0;
         } else {
-          connect_retry_counter++;
-          Serial.printf("DNS failed or invalid (%d/%d)\n", connect_retry_counter, MAX_CONNECT_RETRIES);
+          retry_counter++;
+          Serial.printf("DNS failed or invalid (%d/%d)\n", retry_counter, MAX_CONNECT_RETRIES);
           vTaskDelay(50 / portTICK_PERIOD_MS);
         }
 
-        if (connect_retry_counter > MAX_CONNECT_RETRIES) {
-          connect_retry_counter = 0;
+        if (retry_counter == MAX_CONNECT_RETRIES) {
+          retry_counter = 0;
           state = WIFI_CONNECT;
-          Serial.println("DNS failed, returning to WIFI_CONNECT");
+          Serial.printf("DNS failed, returning to WIFI_CONNECT\n");
         }
-
         break;
 
       case TCP_CONNECT:
         if (WiFi.status() != WL_CONNECTED) {
-          Serial.println("WiFi lost");
           state = WIFI_CONNECT;
           break;
         }
+        if (connectTCP(retry_counter)) {
+          retry_counter = 0;
+          state = RUNNING;
+        } else {
+          retry_counter++;
+          vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
 
-        if (state == TCP_CONNECT) {
-          Serial.println("Connecting TCP");
-          client.stop();
-          if (client.connect(server_ip, port)) {
-            client.setNoDelay(false);
-            //client.setTimeout(5);  // z.B. 5ms
-            state = RUNNING;
-            last_received = millis();
-            connect_retry_counter = 0;
-            // gibts leider nicht client.setKeepAlive(30); // Aktiviere TCP Keep-Alive (falls unterstützt) Sende alle 30 Sekunden ein Keep-Alive-Paket
-            Serial.println("TCP connected");
-          } else {
-            connect_retry_counter++;
-            Serial.printf("TCP failed (%d/%d)", connect_retry_counter, MAX_CONNECT_RETRIES);
-            vTaskDelay(2000 / portTICK_PERIOD_MS);
-          }
-
-          if (connect_retry_counter > MAX_CONNECT_RETRIES) {
-            connect_retry_counter = 0;
-            state = DNS_RESOLVE;
-            Serial.println("TCP failed, returning to DNS_RESOLVE");
-          }
+        if (retry_counter == MAX_CONNECT_RETRIES) {
+          retry_counter = 0;
+          state = DNS_RESOLVE;
+          Serial.println("TCP failed, returning to DNS_RESOLVE");
         }
         break;
 
       case RUNNING:
         if (WiFi.status() != WL_CONNECTED) {
-          Serial.println("WiFi lost");
           state = WIFI_CONNECT;
           break;
         }
-
-        if (!client.connected()) {
-          connect_retry_counter++;
-          vTaskDelay(100 / portTICK_PERIOD_MS);
-          if (connect_retry_counter > 3) {  // 3 mal hintereinander
-            Serial.println("TCP lost, reconnecting...");
-            state = DNS_RESOLVE;
-            connect_retry_counter = 0;
-          }
-        } else {
-          connect_retry_counter = 0;
-        }
-
-        receivePackage(&last_received);
-        if (state != RUNNING)
-          break;
-        sendPackage();
-
-        // keep alive senden
-        if (millis() - last_received > KEEP_ALIVE_INTERVAL_MS * keep_alive_counter) {
-          Package keep_alive;
-          keep_alive.status = 0;
-          keep_alive.payload.push_back(0);
-          keep_alive.size = keep_alive.payload.size();
-          if (!putPackageIntoQueue(sendQueue, keep_alive))
-            Serial.println("sendQueue overflow");
-          Serial.printf("keep alive sent (%d)\n", keep_alive_counter);
-          keep_alive_counter++;
-        }
-        if (millis() - last_received < KEEP_ALIVE_INTERVAL_MS) {
-          keep_alive_counter = 1;
-        }
-
-        if (millis() - last_received > TCP_TIMEOUT) {
-          Serial.println("TCP not answering keep alive, reconnecting...");
-          state = DNS_RESOLVE;
-          keep_alive_counter = 1;
+        bool readable, writable;
+        if (checkSocket(readable, writable)) {
+          if (readable)
+            receivePackage();
+          if (writable)
+            sendPackage();
         }
         break;
     }
-    vTaskDelay(3 / portTICK_PERIOD_MS);
+    vTaskDelay(5 / portTICK_PERIOD_MS);
   }
 }
 
@@ -375,21 +339,11 @@ void PlaybackTask(void *pvParameters) {
   bool sound_on = false;
 
   while (true) {
-    vTaskDelay(100 / portMAX_DELAY);  // damit nicht gepollt wird
-
-    // damit das status indizieren mit der LED aus dem anderen thread nicht überschrieben wird
-    if (state != RUNNING && SELF_CHECK_MODE == false) 
-      continue;
+    vTaskDelay(100 / portTICK_PERIOD_MS);  // damit nicht gepollt wird
 
     // wenn ein/kein package in der leitung ist
-    if (uxQueueMessagesWaiting(playbackQueue) == 0) {
-      noTone(SPEAKER);
-      digitalWrite(LED, LOW);
-      sound_on = false;
+    if (getPackageFromQueue(playbackQueue, package) != pdPASS)
       continue;
-    }
-
-    getPackageFromQueue(playbackQueue, package);
 
     // packet abarbeiten
     for (uint8_t signal : package.payload) {
@@ -412,6 +366,10 @@ void PlaybackTask(void *pvParameters) {
         vTaskDelay(SAMPLING_RATE_MS / portTICK_PERIOD_MS);
       }
     }
+    noTone(SPEAKER);
+    digitalWrite(LED, LOW);
+    sound_on = false;
+
     if (!putPackageIntoQueue(printQueue, package))
       Serial.println("printQueue overflow");
   }
@@ -419,8 +377,8 @@ void PlaybackTask(void *pvParameters) {
 
 void PrintTask(void *pvParameters) {
   Package package;
-  static bool top_line[384] = {false};
-  static bool bottom_line[384] = {false};
+  static bool top_line[384] = { false };
+  static bool bottom_line[384] = { false };
   int index = 0;
   bool writing_top_line = true;
 

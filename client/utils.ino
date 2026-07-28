@@ -25,6 +25,15 @@ void showConnectTCP() {
   }
 }
 
+void showBadSignal() {
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+  }
+}
+
 void playTone() {
   if (!NO_SOUND_MODE)           // nur wenn der drehschalter nicht "ohne Ton" sagt (LOW = angeschaltet)
     tone(SPEAKER, SOUND_FREQ);  // tone() blockiert auf dem esp32 den thread NICHT
@@ -38,29 +47,14 @@ void checkPins() {
   RICK_ROLL_MODE = (digitalRead(RICK_ROLL_MODE_PIN) == LOW);
 }
 
-char *signalToText(uint8_t signal) {
-  static char text[9];
-  uint8_t mask = 0b10000000;
-
-  for (int j = 0; j < 8; j++) {
-    if (signal & mask)
-      text[j] = '1';
-    else
-      text[j] = '0';
-    mask >>= 1;
-  }
-  text[8] = '\0';
-  return text;
-}
-
 void testMosfet() {
   digitalWrite(MOSFET, LOW);
   vTaskDelay(100 / portTICK_PERIOD_MS);
   digitalWrite(MOSFET, HIGH);
 }
 
-void connectWifi(const char ssid[], const char password[]) {
-  client.stop();
+bool connectWifi(const char ssid[], const char password[]) {
+  disconnectTCP();
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
   vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -75,9 +69,60 @@ void connectWifi(const char ssid[], const char password[]) {
   WiFi.begin(ssid, password);
 
   if (WiFi.waitForConnectResult() == WL_CONNECTED) {
-    state = DNS_RESOLVE;
     Serial.println("WiFi OK");
-  } 
+    return true;
+  }
+  Serial.printf("Couldn't connect to %s\n", ssid);
+  return false;
+}
+
+const char* disconnectReason(uint8_t reason) {
+  switch (reason) {
+    case WIFI_REASON_UNSPECIFIED: return "UNSPECIFIED";
+    case WIFI_REASON_AUTH_EXPIRE: return "AUTH_EXPIRE";
+    case WIFI_REASON_AUTH_LEAVE: return "AUTH_LEAVE";
+    case WIFI_REASON_ASSOC_EXPIRE: return "ASSOC_EXPIRE";
+    case WIFI_REASON_ASSOC_TOOMANY: return "ASSOC_TOOMANY";
+    case WIFI_REASON_NOT_AUTHED: return "NOT_AUTHED";
+    case WIFI_REASON_NOT_ASSOCED: return "NOT_ASSOCED";
+    case WIFI_REASON_ASSOC_LEAVE: return "ASSOC_LEAVE";
+    case WIFI_REASON_ASSOC_NOT_AUTHED: return "ASSOC_NOT_AUTHED";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "4WAY_HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT: return "HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
+    case WIFI_REASON_AUTH_FAIL: return "AUTH_FAIL";
+    case WIFI_REASON_ASSOC_FAIL: return "ASSOC_FAIL";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* wifiEventName(arduino_event_id_t event) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_READY: return "WIFI_READY";
+    case ARDUINO_EVENT_WIFI_SCAN_DONE: return "SCAN_DONE";
+    case ARDUINO_EVENT_WIFI_STA_START: return "STA_START";
+    case ARDUINO_EVENT_WIFI_STA_STOP: return "STA_STOP";
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED: return "STA_CONNECTED";
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: return "STA_DISCONNECTED";
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP: return "STA_GOT_IP";
+    case ARDUINO_EVENT_WIFI_STA_LOST_IP: return "STA_LOST_IP";
+    default: return "UNKNOWN";
+  }
+}
+
+std::string packageToText(Package package) {
+  std::string text = "";
+  for (int i = 0; i < package.size; i++) {
+    uint8_t mask = 0b10000000;
+    for (int j = 0; j < 8; j++) {
+      if (package.payload[i] & mask)
+        text += "1";
+      else
+        text += "0";
+      mask >>= 1;
+    }
+  }
+  return text;
 }
 
 // ist nötig, um std::vector<> senden zu können (liegt im heap)
@@ -97,84 +142,188 @@ bool getPackageFromQueue(QueueHandle_t queue, Package& package) {
   if (xQueueReceive(queue, &p, 0) != pdPASS)
     return false;
 
-  package = *p;   // Deep Copy (std::vector kopiert korrekt)
+  package = *p;  // Deep Copy (std::vector kopiert korrekt)
   delete p;
   return true;
 }
 
-void receivePackage(unsigned long *last_received) {
-  // neues packet?
-  if (!client.available())
-    return;
+void disconnectTCP() {
+  if (sock >= 0)
+    close(sock);
+  sock = -1;
+  state = TCP_CONNECT;
+}
 
-  Package incoming;
-  uint16_t bytes_to_read;
+bool connectTCP(int retry_counter) {
+  Serial.println("Connecting TCP...");
 
-  // read status
-  size_t bytesRead = client.read(&incoming.status, sizeof(incoming.status));
-  if (bytesRead != sizeof(incoming.status)) {
-    Serial.printf("FEHLER: Nur %d von %d Bytes von Package.status empfangen!\n", bytesRead, sizeof(incoming.status));
-    client.stop();
+  // socket erstellen
+  sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);  // AF_INET → IPv4, SOCK_STREAM → TCP, IPPROTO_TCP → TCP-Protokoll
+  if (sock < 0) {
+    Serial.println("socket failed");
+    return false;
+  }
+
+  sockaddr_in server_addr = { 0 };
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+  server_addr.sin_addr.s_addr = (uint32_t)server_ip;
+  //server_addr.sin_addr.s_addr = htonl((uint32_t)server_ip); wäre andere endianess. ist aber falsch
+
+  if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
+    Serial.printf("connect failed: %s (%d) (%d/%d)\n", strerror(errno), errno, retry_counter, MAX_CONNECT_RETRIES);
+
+    disconnectTCP();
+    return false;
+  }
+
+  Serial.printf("TCP connected \n");
+
+  // keep alive aktivieren
+  int yes = 1;
+  setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+  // wie viele sekunden kein verkehr, bis erstes keep alive
+  int idle = 10;
+  setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+  // falls erstes keep alive keine antwort - wann das nächste in sekunden
+  int interval = 5;
+  setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+  // wie oft keep alive wiederholen
+  int count = 3;
+  setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+
+  timeval timeout;
+
+  timeout.tv_sec = 5;   // in sekunden
+  timeout.tv_usec = 0;  // in micro sekunden
+
+  // send timeout
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  //receive timeout
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+  state = RUNNING;
+
+  return true;
+}
+
+bool checkSocket(bool& readable, bool& writable) {
+  // check if somethings wrong / client connected?
+  int err;
+  int len = sizeof(err);
+  getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, (socklen_t*)&len);
+
+  if (err) {
+    Serial.printf("Socket error: %s (%d)\n", strerror(err), err);
+    disconnectTCP();
+    return false;
+  }
+
+  if (sock < 0) {
     state = DNS_RESOLVE;
-    return;
-  }
-  *last_received = millis();
-
-  // wait for Package.size
-  while(client.available() < sizeof(incoming.size)) {
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-    if (millis() - *last_received > TCP_TIMEOUT) {
-      Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
-      client.stop();
-      state = DNS_RESOLVE;
-      return;
-    }
+    Serial.printf("socket disconnected returning to DNS_RESOLVE\n");
+    return false;
   }
 
-  // read size
-  uint8_t size[2];
-  bytesRead = client.read(size, sizeof(size));
-  if (bytesRead != sizeof(size)) {
-    Serial.printf("FEHLER: Nur %d von %d Bytes von Package.size empfangen!\n", bytesRead, sizeof(size));
-    client.stop();
-    state = DNS_RESOLVE;
-    return;
-  }
-  incoming.size = (uint16_t(size[0]) << 8) | size[1];
-  *last_received = millis();
-  bytes_to_read = incoming.size;
+  readable = false;
+  writable = false;
 
-  // read Package.payload
-  while(bytes_to_read > 0) {
-    if (client.available()) {
-      uint8_t signal;
-      bytesRead = client.read(&signal, sizeof(signal));
-      if (bytesRead != sizeof(signal)) {
-        Serial.printf("FEHLER: Nur %d von %d Bytes von Package.payload empfangen!\n", bytesRead, sizeof(signal));
-        client.stop();
-        state = DNS_RESOLVE;
-        return;
-      }
-      *last_received = millis();
-      bytes_to_read--;
-      Serial.printf(signalToText(signal));
-      incoming.payload.push_back(signal);
+  fd_set readfds;
+  fd_set writefds;
+
+  FD_ZERO(&readfds);
+  FD_ZERO(&writefds);
+
+  FD_SET(sock, &readfds);
+  FD_SET(sock, &writefds);
+
+  timeval tv{ 0, 0 };
+
+  int ret = select(sock + 1,
+                   &readfds,
+                   &writefds,
+                   nullptr,
+                   &tv);
+
+  if (ret < 0) {
+    Serial.printf("select failed: %d\n", errno);
+    disconnectTCP();
+    return false;
+  }
+
+  readable = FD_ISSET(sock, &readfds);
+  writable = FD_ISSET(sock, &writefds);
+
+  return true;
+}
+
+bool sendAll(const uint8_t* data, size_t len) {
+  size_t sent = 0;
+
+  while (sent < len) {
+    int n = send(sock, data + sent, len - sent, 0);
+    if (n > 0) {
+      sent += n;
+    } else if (n == 0) {
+      Serial.println("peer disconnected");
+      disconnectTCP();
+      return false;
     } else {
-      vTaskDelay(10 / portTICK_PERIOD_MS);
+      Serial.printf("send failed: %d\n", errno);
+      disconnectTCP();
+      return false;
     }
-    if (millis() - *last_received > TCP_TIMEOUT) {
-      Serial.printf("FEHLER: TCP Timeout beim empfangen von Package.size\n");
-      client.stop();
-      state = DNS_RESOLVE;
-      return;
-    }
+    // errno == ETIMEDOUT -> Receive-Timeout
+    // errno == ECONNRESET-> Gegenstelle hat die Verbindung zurückgesetzt.
+    // errno == ENOTCONN  -> Socket ist nicht verbunden.
+    // errno == EAGAIN    -> Timeout bei einem nicht blockierenden Socket oder wenn SO_RCVTIMEO abgelaufen ist (je nach Plattform kann auch EWOULDBLOCK verwendet werden).
   }
-  Serial.printf("\n");
+  return true;
+}
 
-  if (incoming.status == 0) {
-    Serial.printf("keep alive got\n");
-    return;
+bool recvAll(uint8_t* bytes, size_t bytesToRead) {
+  size_t got = 0;
+
+  while (got < bytesToRead) {
+    int n = recv(sock, bytes + got, bytesToRead - got, MSG_WAITALL);
+
+    if (n > 0) {
+      got += n;
+    } else if (n == 0) {
+      Serial.println("peer disconnected");
+      disconnectTCP();
+      return false;
+    } else {
+      Serial.printf("recv failed: %d\n", errno);
+      disconnectTCP();
+      return false;
+    }
+    // errno == ETIMEDOUT -> Receive-Timeout
+    // errno == ECONNRESET-> Gegenstelle hat die Verbindung zurückgesetzt.
+    // errno == ENOTCONN  -> Socket ist nicht verbunden.
+    // errno == EAGAIN    -> Timeout bei einem nicht blockierenden Socket oder wenn SO_RCVTIMEO abgelaufen ist (je nach Plattform kann auch EWOULDBLOCK verwendet werden).
   }
+
+  return true;
+}
+
+void receivePackage() {
+  Package incoming;
+
+  // recv header
+  uint8_t header[3];
+  if (!recvAll(header, 3))
+    return;
+
+  incoming.status = header[0];
+  incoming.size = (uint16_t(header[1]) << 8) | header[2];
+
+  // recv payload
+  incoming.payload.resize(incoming.size);
+  if (!recvAll(incoming.payload.data(), incoming.size))
+    return;
+
+  Serial.printf("%s\n", packageToText(incoming).c_str());
 
   if (!putPackageIntoQueue(playbackQueue, incoming))
     Serial.println("playbackQueue overflow");
@@ -220,13 +369,7 @@ void sendPackage() {
   packet.insert(packet.end(), outgoing.payload.begin(), outgoing.payload.end());
 
   // Send package
-  size_t bytesSent = client.write(packet.data(), packet.size());
-  if (bytesSent != packet.size()) {
-    Serial.printf("FEHLER: Nur %d von %d Bytes gesendet!\n", bytesSent, packet.size());
-    client.stop();
-    state = DNS_RESOLVE;
-    return;
-  }
+  sendAll(packet.data(), packet.size());
 }
 
 void print(bool top_line[384], bool bottom_line[384]) {
