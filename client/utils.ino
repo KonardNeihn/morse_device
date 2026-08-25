@@ -55,6 +55,7 @@ void testMosfet() {
 
 bool connectWifi(const char ssid[], const char password[]) {
   disconnectTCP();
+  state = WIFI_CONNECT;
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
   vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -64,12 +65,34 @@ bool connectWifi(const char ssid[], const char password[]) {
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
 
+  int n = WiFi.scanNetworks();
+
+  for (int i = 0; i < n; i++) {
+    Serial.printf("%2d: %s RSSI=%d Ch=%d\n",
+                  i,
+                  WiFi.SSID(i).c_str(),
+                  WiFi.RSSI(i),
+                  WiFi.channel(i));
+  }
+
   Serial.printf("Connecting to %s\n", ssid);
 
   WiFi.begin(ssid, password);
 
+  n = WiFi.scanNetworks();
+
+  for (int i = 0; i < n; i++) {
+    Serial.printf("%2d: %s RSSI=%d Ch=%d\n",
+                  i,
+                  WiFi.SSID(i).c_str(),
+                  WiFi.RSSI(i),
+                  WiFi.channel(i));
+  }
+
   if (WiFi.waitForConnectResult() == WL_CONNECTED) {
     Serial.println("WiFi OK");
+    Serial.printf("IPv4: %s\n", WiFi.localIP().toString().c_str());
+    //Serial.printf("IPv6: %s\n", WiFi.STA.getIPv6().toString().c_str());
     return true;
   }
   Serial.printf("Couldn't connect to %s\n", ssid);
@@ -151,14 +174,65 @@ void disconnectTCP() {
   if (sock >= 0)
     close(sock);
   sock = -1;
-  state = TCP_CONNECT;
+}
+
+bool resolveServer() {
+  struct addrinfo hints = {};
+  struct addrinfo* result = nullptr;
+
+  hints.ai_family = AF_INET6;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  char portString[8];
+  snprintf(portString, sizeof(portString), "%d", port);
+
+  int err = getaddrinfo(
+    server_address,
+    portString,
+    &hints,
+    &result);
+
+  if (err != 0 || result == nullptr) {
+    Serial.printf("IPv6 DNS failed, error=%d\n", err);
+    return false;
+  }
+
+  memcpy(
+    &server_addr,
+    result->ai_addr,
+    result->ai_addrlen);
+
+  server_addr_len = result->ai_addrlen;
+
+  Serial.println("IPv6 DNS OK");
+
+  freeaddrinfo(result);
+  return true;
 }
 
 bool connectTCP(int retry_counter) {
   Serial.println("Connecting TCP...");
 
   // socket erstellen
-  sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);  // AF_INET → IPv4, SOCK_STREAM → TCP, IPPROTO_TCP → TCP-Protokoll
+  sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);  // AF_INET → IPv6, SOCK_STREAM → TCP, IPPROTO_TCP → TCP-Protokoll
+
+  if (sock < 0) {
+    Serial.printf("IPv6 socket failed: %s\n", strerror(errno));
+    return false;
+  }
+
+  if (connect(sock, (struct sockaddr*)&server_addr, server_addr_len) != 0) {
+    Serial.printf("IPv6 connect failed: %s (%d)\n", strerror(errno), errno);
+
+    close(sock);
+    sock = -1;
+    return false;
+  }
+
+  Serial.println("IPv6 TCP connected");
+
+  /*
   if (sock < 0) {
     Serial.println("socket failed");
     return false;
@@ -172,12 +246,11 @@ bool connectTCP(int retry_counter) {
 
   if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
     Serial.printf("connect failed: %s (%d) (%d/%d)\n", strerror(errno), errno, retry_counter, MAX_CONNECT_RETRIES);
-
-    disconnectTCP();
     return false;
   }
 
   Serial.printf("TCP connected \n");
+  */
 
   // keep alive aktivieren
   int yes = 1;
@@ -215,12 +288,10 @@ bool checkSocket(bool& readable, bool& writable) {
 
   if (err) {
     Serial.printf("Socket error: %s (%d)\n", strerror(err), err);
-    disconnectTCP();
     return false;
   }
 
   if (sock < 0) {
-    state = DNS_RESOLVE;
     Serial.printf("socket disconnected returning to DNS_RESOLVE\n");
     return false;
   }
@@ -247,7 +318,6 @@ bool checkSocket(bool& readable, bool& writable) {
 
   if (ret < 0) {
     Serial.printf("select failed: %d\n", errno);
-    disconnectTCP();
     return false;
   }
 
@@ -267,10 +337,12 @@ bool sendAll(const uint8_t* data, size_t len) {
     } else if (n == 0) {
       Serial.println("peer disconnected");
       disconnectTCP();
+      state = TCP_CONNECT;
       return false;
     } else {
       Serial.printf("send failed: %d\n", errno);
       disconnectTCP();
+      state = TCP_CONNECT;
       return false;
     }
     // errno == ETIMEDOUT -> Receive-Timeout
@@ -292,10 +364,12 @@ bool recvAll(uint8_t* bytes, size_t bytesToRead) {
     } else if (n == 0) {
       Serial.println("peer disconnected");
       disconnectTCP();
+      state = TCP_CONNECT;
       return false;
     } else {
       Serial.printf("recv failed: %d\n", errno);
       disconnectTCP();
+      state = TCP_CONNECT;
       return false;
     }
     // errno == ETIMEDOUT -> Receive-Timeout
@@ -372,7 +446,7 @@ void sendPackage() {
   sendAll(packet.data(), packet.size());
 }
 
-void print(bool top_line[384], bool bottom_line[384]) {
+void makePrinterReady() {
   // Reset with ESC @
   printer.write(27);   // ESC
   printer.write('@');  // @
@@ -385,7 +459,9 @@ void print(bool top_line[384], bool bottom_line[384]) {
   printer.write(255);  // n2   → Länge Heizzeit (hoch -> langsam, aber dunkler)          evtl bringt 255 nicht so viel,
   printer.write(255);  // n3   → Pause zwischen Heizungen (hoch -> Strom sinkt stark)    evtl hellere schrift bei mehr zeit, da benachbarte punkte sich gegenseitig vorwärmen (-> wartezeit abkühlen)
   vTaskDelay(1);
+}
 
+void print(bool top_line[384], bool bottom_line[384]) {
   // Größe des Bildes
   printer.write(27);
   printer.write('*');
@@ -406,6 +482,5 @@ void print(bool top_line[384], bool bottom_line[384]) {
     if (i % 16 == 0)  // alle 16 Spalten mal kurz durchatmen (evtl auch wichtig für den watchdog)
       vTaskDelay(1);
   }
-  printer.flush();
   vTaskDelay(50 / portTICK_PERIOD_MS);
 }

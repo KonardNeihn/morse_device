@@ -17,22 +17,22 @@
 #include "lwip/ip_addr.h"
 
 // WLAN-Zugangsdaten
-const char *ssid = "GameOfWlan";
+const char *ssid = "GameOfWlanc";
 const char *password = "thenorthremembers";
 const char *ssid2 = "Fairphone 6";
 const char *password2 = "Hurensohn";
 
 
 // Server-Konfiguration
-const char *server_address = "morse.hopto.org";  // IP des Servers
-const int port = 5100;                           // Port des Servers Senden
+const char *server_address = "morse.ddns.berlin";  // Adesse des Servers
+const int port = 6969;                             // Port des Servers Senden
 
 // Schräubchen zum drehen
 #define SAMPLING_RATE_MS 10  // eine Abtastung alle x ms
 #define RECORDING_TIMEOUT_MS 5000
 #define TCP_TIMEOUT 30000
 #define KEEP_ALIVE_INTERVAL_MS 5000
-#define MAX_CONNECT_RETRIES 5
+#define MAX_CONNECT_RETRIES 3
 #define QUEUE_SIZE 10
 #define SOUND_FREQ 200
 
@@ -64,7 +64,9 @@ struct Package {
 
 ConnectionState state = WIFI_CONNECT;
 
-IPAddress server_ip;
+//IPAddress server_ip;
+struct sockaddr_storage server_addr;
+socklen_t server_addr_len;
 
 volatile bool NO_SOUND_MODE = false;
 volatile bool NO_PRINTER_MODE = false;
@@ -94,6 +96,7 @@ void setup() {
   Serial.begin(115200);
   printer.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   vTaskDelay(1000 / portTICK_PERIOD_MS);
+  Serial.printf("ESP32 Arduino Core: %s\n", ESP.getSdkVersion());
 
   sendQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package *));
   playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package *));
@@ -143,6 +146,11 @@ void CheckerTask(void *pvParameters) {
           | -70 bis -80 dBm | schwach       |
           |       < -80 dBm | kritisch      |*/
 
+
+    // im self check mode keine statusmeldung über lampe
+    if (SELF_CHECK_MODE)
+      continue;
+
     switch (state) {
       case WIFI_CONNECT:
         showSearchingWiFi();
@@ -178,6 +186,9 @@ void CheckerTask(void *pvParameters) {
 void ConnectionTask(void *pvParameters) {
   bool was_connected = false;
   int retry_counter = 0;
+
+  // damit die pins erst gecheckt werden können
+  vTaskDelay(500 / portTICK_PERIOD_MS);
 
   while (true) {
     if (SELF_CHECK_MODE) {
@@ -231,6 +242,7 @@ void ConnectionTask(void *pvParameters) {
           state = WIFI_CONNECT;
           break;
         }
+        /*
         server_ip = IPAddress(0, 0, 0, 0);
         Serial.println("Resolving DNS...");
         if (WiFi.hostByName(server_address, server_ip) && server_ip != IPAddress(0, 0, 0, 0)) {
@@ -248,6 +260,21 @@ void ConnectionTask(void *pvParameters) {
           state = WIFI_CONNECT;
           Serial.printf("DNS failed, returning to WIFI_CONNECT\n");
         }
+        */
+
+        if (resolveServer()) {
+          state = TCP_CONNECT;
+          retry_counter = 0;
+        } else {
+          retry_counter++;
+          vTaskDelay(50 / portTICK_PERIOD_MS);
+        }
+
+        if (retry_counter == MAX_CONNECT_RETRIES) {
+          retry_counter = 0;
+          state = WIFI_CONNECT;
+          Serial.printf("DNS failed, returning to WIFI_CONNECT\n");
+        }
         break;
 
       case TCP_CONNECT:
@@ -255,11 +282,12 @@ void ConnectionTask(void *pvParameters) {
           state = WIFI_CONNECT;
           break;
         }
+        retry_counter++;
         if (connectTCP(retry_counter)) {
           retry_counter = 0;
           state = RUNNING;
         } else {
-          retry_counter++;
+          disconnectTCP();
           vTaskDelay(1000 / portTICK_PERIOD_MS);
         }
 
@@ -281,6 +309,9 @@ void ConnectionTask(void *pvParameters) {
             receivePackage();
           if (writable)
             sendPackage();
+        } else {
+          disconnectTCP();
+          state = TCP_CONNECT;
         }
         break;
     }
@@ -397,6 +428,8 @@ void PrintTask(void *pvParameters) {
     if (NO_PRINTER_MODE == true)
       continue;
 
+    makePrinterReady();
+
     // packet abarbeiten
     for (uint8_t signal : package.payload) {
       uint8_t mask = 0b10000000;
@@ -408,6 +441,7 @@ void PrintTask(void *pvParameters) {
         else
           bottom_line[index] = (signal & mask);
 
+        mask >>= 1;
         index++;
 
         // wenn eine zeile gedruckt werden kann
@@ -424,7 +458,6 @@ void PrintTask(void *pvParameters) {
           }
         }
       }
-      mask >>= 1;
     }
     if (index != 0) {
       print(top_line, bottom_line);
@@ -433,6 +466,8 @@ void PrintTask(void *pvParameters) {
       writing_top_line = true;
       index = 0;
     }
+    // alles zeilen flushen
+    printer.flush();
     // Zeilenvorschub
     printer.write('\n');
     printer.write('\n');

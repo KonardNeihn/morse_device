@@ -10,7 +10,7 @@ import sys
 
 HOST_NAME = socket.gethostname()
 TCP_IP = socket.gethostbyname(HOST_NAME)
-TCP_PORT = 5100
+TCP_PORT = 6969
 BUFFER_SIZE = 5
 
 # ANSI-Farbcodes
@@ -43,9 +43,10 @@ clients_lock = threading.Lock()
 
 def main():
     running = True
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", TCP_PORT))
+    server.bind(("::", TCP_PORT))
     server.listen()
     server.settimeout(1.0)      # wichtig für kontrolliertes schließen
 
