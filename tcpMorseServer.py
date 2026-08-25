@@ -9,7 +9,6 @@ import sys
 
 
 HOST_NAME = socket.gethostname()
-TCP_IP = socket.gethostbyname(HOST_NAME)
 TCP_PORT = 6969
 BUFFER_SIZE = 5
 
@@ -43,6 +42,15 @@ clients_lock = threading.Lock()
 
 def main():
     running = True
+
+    ipv6_info = socket.getaddrinfo(
+        HOST_NAME,
+        TCP_PORT,
+        socket.AF_INET6,
+        socket.SOCK_STREAM
+    )
+    TCP_IP = ipv6_info[0][4][0]
+
     server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
