@@ -68,7 +68,8 @@ def main():
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)      # nach 10 s Inaktivität
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)     # alle 5 s erneut
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)        # 3 Versuche
-                client_socket.setblocking(True)
+                #client_socket.setblocking(True)
+                client_socket.settimeout(1.0)
             
             except socket.timeout:
                 continue
@@ -179,11 +180,25 @@ class Clienthandler:
 
     def recv_exact(self, size):
         data = b""
-        while len(data) < size:
-            chunk = self.client_socket.recv(size - len(data))
-            if not chunk:
+
+        while len(data) < size and self.running:
+            try:
+                chunk = self.client_socket.recv(size - len(data))
+                
+                if not chunk:
+                    return None
+
+                data += chunk
+
+            except socket.timeout:#
+                continue#
+
+            except OSError:
                 return None
-            data += chunk
+
+        if not self.running:
+            return None
+
         return data
     
     def send(self, packet):
@@ -218,8 +233,8 @@ class Clienthandler:
 
         self.client_socket.close()
         self.out_queue.put(None)
-        self.receive_thread.join()
-        self.send_thread.join()
+        self.receive_thread.join(timeout=2)
+        self.send_thread.join(timeout=2)
 
 
 # ==============================
