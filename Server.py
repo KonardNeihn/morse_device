@@ -7,8 +7,6 @@ from datetime import datetime
 from enum import Enum
 import sys
 
-
-HOST_NAME = socket.gethostname()
 TCP_PORT = 6969
 BUFFER_SIZE = 5
 
@@ -43,14 +41,6 @@ clients_lock = threading.Lock()
 def main():
     running = True
 
-    ipv6_info = socket.getaddrinfo(
-        HOST_NAME,
-        TCP_PORT,
-        socket.AF_INET6,
-        socket.SOCK_STREAM
-    )
-    TCP_IP = ipv6_info[0][4][0]
-
     server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -58,7 +48,7 @@ def main():
     server.listen()
     server.settimeout(1.0)      # wichtig für kontrolliertes schließen
 
-    log(f"Server startet at {TCP_IP}:{TCP_PORT} name: {HOST_NAME}", GOOD_INFO)
+    log(f"Server startet...", GOOD_INFO)
 
     try: 
         while running:
@@ -68,7 +58,8 @@ def main():
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)      # nach 10 s Inaktivität
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)     # alle 5 s erneut
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)        # 3 Versuche
-                client_socket.setblocking(True)
+                #client_socket.setblocking(True)
+                client_socket.settimeout(1.0)
             
             except socket.timeout:
                 continue
@@ -179,11 +170,25 @@ class Clienthandler:
 
     def recv_exact(self, size):
         data = b""
-        while len(data) < size:
-            chunk = self.client_socket.recv(size - len(data))
-            if not chunk:
+
+        while len(data) < size and self.running:
+            try:
+                chunk = self.client_socket.recv(size - len(data))
+                
+                if not chunk:
+                    return None
+
+                data += chunk
+
+            except socket.timeout:#
+                continue#
+
+            except OSError:
                 return None
-            data += chunk
+
+        if not self.running:
+            return None
+
         return data
     
     def send(self, packet):
@@ -212,14 +217,14 @@ class Clienthandler:
 
         try:
             self.client_socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
+        except OSError as e:
             log(f"Socket error ({type(e).__name__}): {e} with {self.client_address}", ERROR)
             pass
 
         self.client_socket.close()
         self.out_queue.put(None)
-        self.receive_thread.join()
-        self.send_thread.join()
+        self.receive_thread.join(timeout=2)
+        self.send_thread.join(timeout=2)
 
 
 # ==============================
