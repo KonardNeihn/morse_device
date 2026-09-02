@@ -241,7 +241,8 @@ def log(message, level=INFO):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     color = COLORS.get(level.value, "")
     reset = COLORS["RESET"]
-    print(f"{timestamp} {color}[{level.value:<9}]{reset} {message}")
+    #print(f"{timestamp} {color}[{level.value:<9}]{reset} {message}")
+    print(f"{color}[{level.value:<9}]{reset} {message}")
 
 def format_packet(packet):
     status = packet["status"]
