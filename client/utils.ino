@@ -7,7 +7,7 @@ void showSearchingWiFi() {
   }
 }
 
-void showResolvingDNS() {
+void showWaitForIP6() {
   for (int i = 0; i < 2; i++) {
     digitalWrite(LED, HIGH);
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -16,7 +16,7 @@ void showResolvingDNS() {
   }
 }
 
-void showConnectTCP() {
+void showResolvingDNS() {
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED, HIGH);
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -25,12 +25,21 @@ void showConnectTCP() {
   }
 }
 
-void showBadSignal() {
+void showConnectTCP() {
   for (int i = 0; i < 4; i++) {
     digitalWrite(LED, HIGH);
     vTaskDelay(200 / portTICK_PERIOD_MS);
     digitalWrite(LED, LOW);
     vTaskDelay(200 / portTICK_PERIOD_MS);
+  }
+}
+
+void showBadSignal() {
+  for (int i = 0; i < 1; i++) {
+    digitalWrite(LED, HIGH);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    digitalWrite(LED, LOW);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
@@ -61,6 +70,10 @@ bool connectWifi(const char ssid[], const char password[]) {
   vTaskDelay(100 / portTICK_PERIOD_MS);
   WiFi.mode(WIFI_STA);
   vTaskDelay(100 / portTICK_PERIOD_MS);
+  bool ipv6Enabled = WiFi.STA.enableIPv6(true);
+
+  Serial.printf("IPv6 enable: %s\n",
+                ipv6Enabled ? "OK" : "FAILED");
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -91,9 +104,22 @@ bool connectWifi(const char ssid[], const char password[]) {
 
   if (WiFi.waitForConnectResult() == WL_CONNECTED) {
     Serial.println("WiFi OK");
+
     Serial.printf("IPv4: %s\n", WiFi.localIP().toString().c_str());
-    //Serial.printf("IPv6: %s\n", WiFi.STA.getIPv6().toString().c_str());
-    return true;
+
+    state = WAIT_FOR_IP6;
+
+    for (int i = 0; i < 20; i++) {
+      Serial.printf("Waiting for IPv6 Address\n");
+      if (WiFi.STA.hasGlobalIPv6()) {
+        Serial.printf("IPv6 global: %s\n", WiFi.STA.globalIPv6().toString().c_str());
+        return true;
+      }
+      vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+
+    Serial.printf("Didn't get IPv6 Address\n");
+    return false;
   }
   Serial.printf("Couldn't connect to %s\n", ssid);
   return false;
@@ -129,7 +155,10 @@ const char* wifiEventName(arduino_event_id_t event) {
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: return "STA_DISCONNECTED";
     case ARDUINO_EVENT_WIFI_STA_GOT_IP: return "STA_GOT_IP";
     case ARDUINO_EVENT_WIFI_STA_LOST_IP: return "STA_LOST_IP";
-    default: return "UNKNOWN";
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP6: return "STA_GOT_IP6";
+
+    default:
+      return "UNKNOWN";
   }
 }
 
@@ -176,7 +205,7 @@ void disconnectTCP() {
   sock = -1;
 }
 
-bool resolveServer() {
+bool resolveDNS() {
   struct addrinfo hints = {};
   struct addrinfo* result = nullptr;
 
@@ -198,6 +227,28 @@ bool resolveServer() {
     return false;
   }
 
+  // ALLE gefundenen Adressen ausgeben
+  int i = 0;
+  for (struct addrinfo* p = result; p != nullptr; p = p->ai_next) {
+    char addrStr[INET6_ADDRSTRLEN] = {};
+
+    struct sockaddr_in6* addr6 =
+      reinterpret_cast<struct sockaddr_in6*>(p->ai_addr);
+
+    inet_ntop(
+      AF_INET6,
+      &(addr6->sin6_addr),
+      addrStr,
+      sizeof(addrStr));
+
+    Serial.printf(
+      "DNS result %d: [%s]:%d\n",
+      i++,
+      addrStr,
+      ntohs(addr6->sin6_port));
+  }
+
+  // erste Adresse übernehmen
   memcpy(
     &server_addr,
     result->ai_addr,

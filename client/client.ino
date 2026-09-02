@@ -15,9 +15,10 @@
 //
 #include "lwip/tcp.h"
 #include "lwip/ip_addr.h"
+#include "esp_netif.h"
 
 // WLAN-Zugangsdaten
-const char *ssid = "GameOfWlanc";
+const char *ssid = "GameOfWlan";
 const char *password = "thenorthremembers";
 const char *ssid2 = "Fairphone 6";
 const char *password2 = "Hurensohn";
@@ -51,6 +52,7 @@ const int port = 6969;                             // Port des Servers Senden
 
 enum ConnectionState {
   WIFI_CONNECT,
+  WAIT_FOR_IP6,
   DNS_RESOLVE,
   TCP_CONNECT,
   RUNNING
@@ -109,6 +111,7 @@ void setup() {
       auto reason = info.wifi_sta_disconnected.reason;
       Serial.printf("Disconnected: %s (%d)\n", disconnectReason(reason), reason);
     }
+
   });
 
   xTaskCreatePinnedToCore(ConnectionTask, "Check WiFi TCP", 4096, NULL, 1, NULL, 0);
@@ -116,8 +119,6 @@ void setup() {
   xTaskCreatePinnedToCore(PlaybackTask, "Output Task", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(CheckerTask, "Checker Task", 4096, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(PrintTask, "Print Task", 4096, NULL, 2, NULL, 1);
-
-  Serial.printf("Arduino ESP32 Core: %s\n", ESP.getSdkVersion());
 
   //vTaskDelete(NULL);  // Beendet den Arduino-Loop-Task
 }
@@ -154,6 +155,10 @@ void CheckerTask(void *pvParameters) {
     switch (state) {
       case WIFI_CONNECT:
         showSearchingWiFi();
+        break;
+
+      case WAIT_FOR_IP6:
+        showWaitForIP6();
         break;
 
       case DNS_RESOLVE:
@@ -262,7 +267,7 @@ void ConnectionTask(void *pvParameters) {
         }
         */
 
-        if (resolveServer()) {
+        if (resolveDNS()) {
           state = TCP_CONNECT;
           retry_counter = 0;
         } else {
