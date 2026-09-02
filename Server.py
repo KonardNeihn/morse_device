@@ -111,7 +111,7 @@ class Clienthandler:
         self.send_thread.start()
 
     def receive_loop(self):
-        log(f"New client: {self.client_address}", GOOD_INFO)
+        log(f"New client:             {self.client_address}", GOOD_INFO)
         while self.running:
             try:
                 ready, _, _ = select.select([self.client_socket], [], [], 1.0)
@@ -122,7 +122,7 @@ class Clienthandler:
                 # Zuerst status und length lesen (3 Bytes)
                 header = self.recv_exact(3)
                 if header is None:
-                    log(f"No header received: {self.client_address}", ERROR)
+                    log(f"No header received:     {self.client_address}", ERROR)
                     break
 
                 status = header[0]
@@ -130,13 +130,13 @@ class Clienthandler:
 
                 signal_data = self.recv_exact(length)
                 if signal_data is None:
-                    log(f"No payload received: {self.client_address}", ERROR)
+                    log(f"No payload received:    {self.client_address}", ERROR)
                     break
 
                 # Paket zusammenbauen (status, length, signal_data)
                 packet = {"status": status, "length": length, "signal": signal_data}
 
-                log(f"Package received: {self.client_address} {format_packet(packet)}", INFO)
+                log(f"Package received:       {self.client_address} {format_packet(packet)}", INFO)
 
                 # keep alive zurück senden
                 if status == 0:
@@ -157,10 +157,10 @@ class Clienthandler:
                 broadcast(packet, self)
 
             except Exception as e:
-                log(f"Error while receiving: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
+                log(f"Error while receiving:  ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
                 break
 
-        log(f"Client disconnected: {self.client_address}", WARNING)
+        log(f"Client disconnected:    {self.client_address}", WARNING)
         self.client_socket.close()
         self.running = False
         self.out_queue.put(None)
@@ -208,9 +208,9 @@ class Clienthandler:
                 if packet is None:
                     break
                 self.client_socket.sendall(packet)
-                log(f"Package sent to: {self.client_address}", INFO)
+                log(f"Package sent to:        {self.client_address}", INFO)
             except Exception as e:
-                log(f"Error while sending: ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
+                log(f"Error while sending:    ({type(e).__name__}): {e} with: {self.client_address}", ERROR)
     
     def stop(self):
         self.running = False
