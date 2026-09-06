@@ -11,6 +11,11 @@
 //   5. Tasks    – je eine eigene Endlosschleife, auf die CPU-Kerne verteilt
 //
 // Danach läuft alles nebenläufig über FreeRTOS-Tasks weiter.
+//
+// ToDo:
+// - Client Webserver AP zum WLAN eingeben oder gar log auslesen? ap und sta gleichzeitig?
+// - nachrichten auf server zwischenspeichern
+//
 // =============================================================================
 
 #include <esp_event.h>

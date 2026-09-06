@@ -8,9 +8,10 @@
 //   - Pakete senden/empfangen (Header + Payload)
 //
 // Das Netzwerk-Protokoll eines Pakets (muss zum Server passen):
-//   Byte 0    : status (0=keepalive, 1=normal, 2=Bestätigung, 3=server_check)
-//   Byte 1..2 : Größe des Payloads (16 Bit, Big-Endian)
-//   Byte 3..  : Payload (die Morse-Bytes)
+//   Byte 0     : status (0=keepalive, 1=Nachricht, 2=ACK, 3=check, 4=register)
+//   Byte 1..8  : msg_id (64 Bit, Big-Endian; Bedeutung je Richtung)
+//   Byte 9..10 : Größe des Payloads (16 Bit, Big-Endian)
+//   Byte 11..  : Payload (Morse-Bytes bzw. beim Register die 6-Byte-MAC)
 // =============================================================================
 
 #include "network.h"
@@ -19,6 +20,7 @@
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <nvs.h>
 
 #include <cstdio>
 #include <string.h>
@@ -28,10 +30,18 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <lwip/inet.h>
+#include <lwip/dns.h>
 
 #include "app_state.h"
 #include "config.h"
 #include "package.h"
+
+#include <esp_system.h>   // esp_random
+#include <esp_mac.h>      // esp_read_mac
+#include <esp_timer.h>    // esp_timer_get_time
+
+#include <algorithm>      // std::find
+#include <deque>
 
 static const char* TAG = "network";
 static esp_netif_t* sta_netif = nullptr;
@@ -46,6 +56,90 @@ static volatile bool wifi_connect_aborted = false;
 static constexpr int POLL_TIMEOUT_MS = 100;    // select() wartet max. so lange auf Daten
 static constexpr int CONNECT_TIMEOUT_S = 5;    // connect() wartet max. so lange
 static constexpr int SOCKET_IO_TIMEOUT_S = 5;  // recv()/send() blockieren max. so lange
+
+// ------------------------- Identität & Sendepuffer -------------------------
+// Eigene MAC-Adresse (Identität gegenüber dem Server).
+static uint8_t device_mac[6] = { 0 };
+
+// Ausstehende, noch nicht bestätigte Sendungen (für Retry bei fehlendem ACK).
+struct PendingSend {
+  Package pkg;         // enthält status, msg_id (client_msg_id) und payload
+  uint32_t last_send_ms;
+  int retries;
+};
+static std::vector<PendingSend> pendingSends;
+
+// Zuletzt verarbeitete server_msg_ids (Dedupe gegen doppeltes Zustellen).
+static constexpr size_t PROCESSED_MAX = 32;
+static std::deque<uint64_t> processedIds;
+
+static uint32_t nowMs() {
+  return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+// Liefert einen lesbaren Text für einen Socket-Fehlercode. Ein Timeout
+// (SO_RCVTIMEO/SO_SNDTIMEO abgelaufen) wird explizit als "timeout" markiert,
+// damit man ihn im Log klar von "reset"/"unreachable" unterscheiden kann.
+static const char* socketErrText(int err) {
+  if (err == EAGAIN || err == EWOULDBLOCK || err == ETIMEDOUT)
+    return "timeout";
+  return strerror(err);
+}
+
+// -------------------------------------------------------------------------
+// client_msg_id: monotoner Zähler, der im NVS (Flash) überlebt. So gibt es
+// nach einem Reboot keine Kollision mit alten Einträgen des Servers.
+// -------------------------------------------------------------------------
+static constexpr const char* NVS_NAMESPACE = "morse";
+static constexpr const char* NVS_KEY_MSG_ID = "client_msg_id";
+
+static uint64_t loadClientMsgId() {
+  nvs_handle_t handle;
+  uint64_t last = 0;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+    size_t len = sizeof(last);
+    nvs_get_blob(handle, NVS_KEY_MSG_ID, &last, &len);
+    nvs_close(handle);
+  }
+  return last;
+}
+
+static void saveClientMsgId(uint64_t last) {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+    nvs_set_blob(handle, NVS_KEY_MSG_ID, &last, sizeof(last));
+    nvs_commit(handle);
+    nvs_close(handle);
+  }
+}
+
+// Eindeutige client_msg_id: monotoner Zähler, der im NVS überlebt.
+static uint64_t newClientMsgId() {
+  static uint64_t last_used = 0;
+  static bool loaded = false;
+
+  if (!loaded) {
+    last_used = loadClientMsgId();  // 0, wenn noch nichts gespeichert ist
+    loaded = true;
+  }
+
+  uint64_t id = last_used + 1;
+  last_used = id;
+  saveClientMsgId(last_used);
+  return id;
+}
+
+// Liest die eigene MAC-Adresse (einmal beim Start, in wifiInit aufgerufen).
+static void readDeviceMac() {
+  if (esp_read_mac(device_mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    memset(device_mac, 0, sizeof(device_mac));
+    ESP_LOGE(TAG, "MAC auslesen fehlgeschlagen");
+  } else {
+    ESP_LOGI(TAG, "MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+             device_mac[0], device_mac[1], device_mac[2],
+             device_mac[3], device_mac[4], device_mac[5]);
+  }
+}
 
 static const char* wifiEventName(int32_t id) {
   switch (id) {
@@ -65,7 +159,6 @@ static const char* ipEventName(int32_t id) {
   switch (id) {
     case IP_EVENT_STA_GOT_IP: return "STA_GOT_IP";
     case IP_EVENT_STA_LOST_IP: return "STA_LOST_IP";
-    case IP_EVENT_GOT_IP6: return "GOT_IP6";
     case IP_EVENT_NETIF_UP: return "NETIF_UP";
     case IP_EVENT_NETIF_DOWN: return "NETIF_DOWN";
     default: return "UNKNOWN";
@@ -100,11 +193,6 @@ static void ipEventHandler(void* arg, esp_event_base_t base, int32_t id, void* d
   if (id == IP_EVENT_STA_GOT_IP) {
     auto* d = static_cast<ip_event_got_ip_t*>(data);
     ESP_LOGI(TAG, "IPv4: %s", inet_ntoa(d->ip_info.ip));  // IPv4-Adresse (Binär) -> Text
-  } else if (id == IP_EVENT_GOT_IP6) {
-    auto* d = static_cast<ip_event_got_ip6_t*>(data);
-    char addrStr[INET6_ADDRSTRLEN];
-    inet_ntop(AF_INET6, d->ip6_info.ip.addr, addrStr, sizeof(addrStr));  // IPv6 -> Text
-    ESP_LOGI(TAG, "IPv6: %s", addrStr);
   } else {
     ESP_LOGI(TAG, "IP event: %s (%ld)", ipEventName(id), (long)id);
   }
@@ -116,7 +204,7 @@ static void ipEventHandler(void* arg, esp_event_base_t base, int32_t id, void* d
 
 void wifiInit() {
   // Standard-WLAN-Schnittstelle "Station" (= Client) anlegen und den Zeiger
-  // für später merken (wir brauchen ihn für die IPv6-Adressen).
+  // für später merken (wir brauchen ihn für die IPv4-Adresse).
   sta_netif = esp_netif_create_default_wifi_sta();
 
   // WLAN-Treiber initialisieren. WIFI_INIT_CONFIG_DEFAULT() liefert eine
@@ -136,52 +224,47 @@ void wifiInit() {
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ipEventHandler, NULL));
 
+  // Eigene MAC-Adresse als Geräte-Identität auslesen.
+  readDeviceMac();
+
   ESP_LOGI(TAG, "WLAN initialisiert");
 }
 
-// Wartet, bis eine globale IPv6-Adresse (und damit eine Route zum Server)
-// vorhanden ist. Die globale Adresse wird per Router Advertisement (SLAAC)
-// vergeben, und der Router schickt RAs teils nur alle paar Sekunden. Deshalb
-// wird hier großzügig gewartet. Muss nach jeder WLAN-(Re-)Verbindung aufgerufen
-// werden, sonst schlägt der IPv6-TCP-Verbindungsaufbau mit "Host is unreachable"
-// fehl (Fehler 118 = ENETUNREACH).
-bool waitForIPv6Address() {
-  // Link-Local-Adresse anlegen (nötig für SLAAC; erst möglich, wenn das
-  // Interface "up" ist). Nach einem Reconnect ggf. erneut nötig. Der Aufruf
-  // ist idempotent (existiert die Adresse schon, passiert nichts).
-  bool linklocal_ok = false;
-  for (int i = 0; i < 50; i++) {
-    // WLAN inzwischen abgebrochen? -> sofort aufgeben, damit die
-    // Zustandsmaschine nicht sinnlos ~5 s wartet.
-    if (!wifiIsConnected())
-      return false;
-    if (esp_netif_create_ip6_linklocal(sta_netif) == ESP_OK) {
-      linklocal_ok = true;
-      break;
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-  ESP_LOGI(TAG, "IPv6 linklocal: %s", linklocal_ok ? "OK" : "FAILED");
-
-  // Auf die globale IPv6-Adresse warten (bis zu ~20 s).
+// Wartet, bis per DHCP eine IPv4-Adresse vergeben wurde (und damit eine Route
+// zum Server existiert). Muss nach jeder WLAN-(Re-)Verbindung aufgerufen
+// werden, sonst schlägt der DNS-/TCP-Verbindungsaufbau fehl. DHCP ist schnell,
+// deshalb reicht eine kurze Warteschleife (bis zu ~20 s).
+bool waitForIPv4Address() {
   for (int i = 0; i < 40; i++) {
-    // WLAN abgebrochen? -> sofort aufgeben (sonst 20 s sinnlos warten).
+    // WLAN inzwischen abgebrochen? -> sofort aufgeben.
     if (!wifiIsConnected())
       return false;
-    esp_ip6_addr_t addr;
-    // Globale IPv6-Adresse abfragen. Liefert ESP_OK, sobald der Router uns
-    // per Router Advertisement eine Adresse zugewiesen hat.
-    if (esp_netif_get_ip6_global(sta_netif, &addr) == ESP_OK) {
-      char addrStr[INET6_ADDRSTRLEN];
-      inet_ntop(AF_INET6, addr.addr, addrStr, sizeof(addrStr));  // Binär -> Text
-      ESP_LOGI(TAG, "IPv6 global: %s", addrStr);
+
+    esp_netif_ip_info_t info;
+    // Liefert ESP_OK, sobald der Router uns per DHCP eine IPv4-Adresse
+    // zugewiesen hat (info.ip.addr ist dann ungleich 0).
+    if (esp_netif_get_ip_info(sta_netif, &info) == ESP_OK && info.ip.addr != 0) {
+      ESP_LOGI(TAG, "IPv4: %s", inet_ntoa(info.ip));  // Binär -> Text
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 
-  ESP_LOGW(TAG, "Didn't get IPv6 address");
+  ESP_LOGW(TAG, "Didn't get IPv4 address");
   return false;
+}
+
+// Setzt den WLAN-Abbruch-Merker zurück. Wird vor einem Verbindungsversuch
+// aufgerufen (sowohl in connectWifi() als auch im Reconnect-Pfad).
+void resetWifiAbort() {
+  wifi_connect_aborted = false;
+}
+
+// true, wenn der WLAN-Treiber einen "endgültigen" Fehler gemeldet hat
+// (NO_AP_FOUND, AUTH_FAIL, ...). Erlaubt es, Warteschleifen frühzeitig
+// abzubrechen, statt die vollen ~10 s zu warten.
+bool wifiAbortRequested() {
+  return wifi_connect_aborted;
 }
 
 bool connectWifi(const char ssid[], const char password[]) {
@@ -243,9 +326,8 @@ bool connectWifi(const char ssid[], const char password[]) {
   }
 
   ESP_LOGI(TAG, "WiFi OK");
-  state = WAIT_FOR_IP6;
-  // Auf die globale IPv6-Adresse warten (siehe waitForIPv6Address()).
-  return waitForIPv6Address();
+  // Auf die IPv4-Adresse warten (DHCP, siehe waitForIPv4Address()).
+  return waitForIPv4Address();
 }
 
 bool wifiIsConnected() {
@@ -294,12 +376,35 @@ void disconnectTCP() {
   sock = -1;  // markieren: kein Socket offen
 }
 
+// Setzt Fallback-DNS-Server, falls DHCP keinen brauchbaren DNS geliefert hat.
+// Viele Android-Hotspots verschicken per DHCP keine DNS-Option; Linux-Clients
+// fallen dann stillschweigend auf das Gateway zurück, lwIP tut das nicht.
+// Deshalb hier: 1) Gateway des aktuellen Netzes (dynamisch ausgelesen, passt
+// sich damit jedem Hotspot/Router an), 2)+3) öffentliche DNS-Server
+// (netzunabhängig, funktionieren überall mit Internetzugang).
+static void setFallbackDnsServers() {
+  esp_netif_ip_info_t info;
+  if (esp_netif_get_ip_info(sta_netif, &info) == ESP_OK && info.gw.addr != 0) {
+    ip_addr_t gw;
+    ip_addr_set_ip4_u32(&gw, info.gw.addr);   // Gateway = DNS-Forwarder des Hotspots
+    dns_setserver(0, &gw);
+  }
+
+  ip_addr_t dns1;
+  IP_ADDR4(&dns1, 8, 8, 8, 8);   // Google Public DNS
+  dns_setserver(1, &dns1);
+
+  ip_addr_t dns2;
+  IP_ADDR4(&dns2, 1, 1, 1, 1);   // Cloudflare Public DNS
+  dns_setserver(2, &dns2);
+}
+
 bool resolveDNS() {
   struct addrinfo hints = {};
   struct addrinfo* result = nullptr;
 
-  // Hinweise für die DNS-Auflösung: wir wollen IPv6 (AF_INET6) + TCP.
-  hints.ai_family = AF_INET6;
+  // Hinweise für die DNS-Auflösung: wir wollen IPv4 (AF_INET) + TCP.
+  hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
 
@@ -310,24 +415,32 @@ bool resolveDNS() {
   // Hostname + Port in eine IP-Adresse auflösen (DNS-Anfrage).
   int err = getaddrinfo(server_address, portString, &hints, &result);
   if (err != 0 || result == nullptr) {
-    ESP_LOGE(TAG, "IPv6 DNS failed, error=%d", err);
+    // Manche Netze (v. a. Android-Hotspots) liefern per DHCP keinen DNS-Server.
+    // Dann schlägt die Auflösung sofort fehl. Als Fallback setzen wir das
+    // aktuelle Gateway sowie öffentliche DNS-Server und versuchen es erneut.
+    ESP_LOGW(TAG, "DNS failed, error=%d, retrying with fallback DNS", err);
+    setFallbackDnsServers();
+    err = getaddrinfo(server_address, portString, &hints, &result);
+  }
+  if (err != 0 || result == nullptr) {
+    ESP_LOGE(TAG, "DNS failed, error=%d", err);
     return false;
   }
 
   // Alle gefundenen Adressen ausgeben (Debug).
   int i = 0;
   for (struct addrinfo* p = result; p != nullptr; p = p->ai_next) {
-    char addrStr[INET6_ADDRSTRLEN] = {};
-    struct sockaddr_in6* addr6 = reinterpret_cast<struct sockaddr_in6*>(p->ai_addr);
-    inet_ntop(AF_INET6, &(addr6->sin6_addr), addrStr, sizeof(addrStr));  // Binär -> Text
-    ESP_LOGI(TAG, "DNS result %d: [%s]:%d", i++, addrStr, ntohs(addr6->sin6_port));  // ntohs: Port in lesbare Reihenfolge
+    char addrStr[INET_ADDRSTRLEN] = {};
+    struct sockaddr_in* addr4 = reinterpret_cast<struct sockaddr_in*>(p->ai_addr);
+    inet_ntop(AF_INET, &(addr4->sin_addr), addrStr, sizeof(addrStr));  // Binär -> Text
+    ESP_LOGI(TAG, "DNS result %d: %s:%d", i++, addrStr, ntohs(addr4->sin_port));  // ntohs: Port in lesbare Reihenfolge
   }
 
   // Erste Adresse übernehmen (für den späteren TCP-connect).
   memcpy(&server_addr, result->ai_addr, result->ai_addrlen);
   server_addr_len = result->ai_addrlen;
 
-  ESP_LOGI(TAG, "IPv6 DNS OK");
+  ESP_LOGI(TAG, "DNS OK");
   freeaddrinfo(result);  // vom DNS belegten Speicher wieder freigeben
   return true;
 }
@@ -335,10 +448,10 @@ bool resolveDNS() {
 bool connectTCP(int retry_counter) {
   ESP_LOGI(TAG, "Connecting TCP...");
 
-  // TCP-Socket öffnen: IPv6 (AF_INET6), verbindungsorientiert (SOCK_STREAM).
-  sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+  // TCP-Socket öffnen: IPv4 (AF_INET), verbindungsorientiert (SOCK_STREAM).
+  sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sock < 0) {
-    ESP_LOGE(TAG, "IPv6 socket failed: %s", strerror(errno));  // strerror: Fehlercode -> Text
+    ESP_LOGE(TAG, "socket failed: %s", strerror(errno));  // strerror: Fehlercode -> Text
     return false;
   }
 
@@ -351,7 +464,7 @@ bool connectTCP(int retry_counter) {
   int ret = connect(sock, reinterpret_cast<struct sockaddr*>(&server_addr), server_addr_len);
   if (ret != 0 && errno != EINPROGRESS) {
     // Sofortiger Fehler (z. B. keine Route -> "Host is unreachable").
-    ESP_LOGE(TAG, "IPv6 connect failed: %s (%d)", strerror(errno), errno);
+    ESP_LOGE(TAG, "connect failed: %s (%d)", strerror(errno), errno);
     close(sock);
     sock = -1;
     return false;
@@ -366,7 +479,7 @@ bool connectTCP(int retry_counter) {
   int sel = select(sock + 1, nullptr, &wfds, nullptr, &tv);
 
   if (sel <= 0) {
-    ESP_LOGE(TAG, "IPv6 connect timeout");
+    ESP_LOGE(TAG, "connect timeout");
     close(sock);
     sock = -1;
     return false;
@@ -377,7 +490,7 @@ bool connectTCP(int retry_counter) {
   socklen_t so_len = sizeof(so_error);
   getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
   if (so_error != 0) {
-    ESP_LOGE(TAG, "IPv6 connect failed: %s (%d)", strerror(so_error), so_error);
+    ESP_LOGE(TAG, "connect failed: %s (%d)", strerror(so_error), so_error);
     close(sock);
     sock = -1;
     return false;
@@ -386,7 +499,7 @@ bool connectTCP(int retry_counter) {
   // Socket wieder blockierend schalten (für die normale Nutzung).
   fcntl(sock, F_SETFL, flags);
 
-  ESP_LOGI(TAG, "IPv6 TCP connected");
+  ESP_LOGI(TAG, "TCP connected");
 
   // --- TCP-Keepalive: erkennt still abgerissene Verbindungen. ---
   // setsockopt() setzt eine Socket-Option (hier: Keepalive einschalten).
@@ -442,7 +555,7 @@ bool checkSocket(bool& readable) {
   int ret = select(sock + 1, &readfds, nullptr, nullptr, &tv);
 
   if (ret < 0) {
-    ESP_LOGE(TAG, "select failed: %d", errno);
+    ESP_LOGE(TAG, "select failed: %s (%d)", socketErrText(errno), errno);
     return false;
   }
 
@@ -470,7 +583,7 @@ bool sendAll(const uint8_t* data, size_t len) {
       state = TCP_CONNECT;
       return false;
     } else {
-      ESP_LOGE(TAG, "send failed: %d", errno);  // errno = letzter Fehlercode
+      ESP_LOGE(TAG, "send failed: %s (%d)", socketErrText(errno), errno);  // errno = letzter Fehlercode
       disconnectTCP();
       state = TCP_CONNECT;
       return false;
@@ -495,7 +608,7 @@ bool recvAll(uint8_t* bytes, size_t bytesToRead) {
       state = TCP_CONNECT;
       return false;
     } else {
-      ESP_LOGE(TAG, "recv failed: %d", errno);  // errno = letzter Fehlercode
+      ESP_LOGE(TAG, "recv failed: %s (%d)", socketErrText(errno), errno);  // errno = letzter Fehlercode
       disconnectTCP();
       state = TCP_CONNECT;
       return false;
@@ -505,65 +618,175 @@ bool recvAll(uint8_t* bytes, size_t bytesToRead) {
   return true;
 }
 
-// Feste Bestätigung ("Paket empfangen", status 2) an den Server schicken.
-// Das Bitmuster ist ein vereinbartes Erkennungssignal.
-static void sendConfirmation() {
-  Package confirmation;
-  confirmation.status = 2;
-  confirmation.payload = { 0b11111111, 0, 0b11111111, 0b11111111, 0b11111111, 0, 0b11111111 };
-  confirmation.size = confirmation.payload.size();
+// =============================================================================
+// Paket zusammenbauen und senden (Header: status + msg_id + size + payload)
+// =============================================================================
+static bool sendPackageBytes(const Package& pkg) {
+  std::vector<uint8_t> packet;
+  packet.reserve(11 + pkg.payload.size());
 
-  if (!putPackageIntoQueue(sendQueue, confirmation))
-    ESP_LOGW(TAG, "sendQueue overflow");
+  packet.push_back(pkg.status);                      // Byte 0: status
+  for (int i = 7; i >= 0; i--)                       // Byte 1..8: msg_id (Big-Endian)
+    packet.push_back((pkg.msg_id >> (i * 8)) & 0xFF);
+  packet.push_back((pkg.size >> 8) & 0xFF);          // Byte 9: size (High)
+  packet.push_back(pkg.size & 0xFF);                 // Byte 10: size (Low)
+  packet.insert(packet.end(), pkg.payload.begin(), pkg.payload.end());
+
+  return sendAll(packet.data(), packet.size());
 }
 
+// Bestätigung (Zustell-ACK) für eine empfangene server_msg_id an den Server.
+static void sendAck(uint64_t server_msg_id) {
+  Package ack;
+  ack.status = 2;            // STATUS_ACK
+  ack.msg_id = server_msg_id;
+  ack.size = 0;
+  ESP_LOGI(TAG, "SEND delivery ACK server_msg_id=%llu",
+           (unsigned long long)server_msg_id);
+  sendPackageBytes(ack);
+}
+
+// Registrierung: eigene MAC-Adresse an den Server schicken (nach jedem Verbinden).
+void sendRegister() {
+  Package reg;
+  reg.status = 4;            // STATUS_REGISTER
+  reg.msg_id = 0;
+  reg.payload.assign(device_mac, device_mac + sizeof(device_mac));
+  reg.size = reg.payload.size();
+  ESP_LOGI(TAG, "SEND register MAC=%02x:%02x:%02x:%02x:%02x:%02x",
+           device_mac[0], device_mac[1], device_mac[2],
+           device_mac[3], device_mac[4], device_mac[5]);
+  sendPackageBytes(reg);
+}
+
+// --- Dedupe: wurde diese server_msg_id schon verarbeitet? -------------------
+static bool alreadyProcessed(uint64_t server_msg_id) {
+  for (uint64_t id : processedIds)
+    if (id == server_msg_id)
+      return true;
+  return false;
+}
+
+static void markProcessed(uint64_t server_msg_id) {
+  if (processedIds.size() >= PROCESSED_MAX)
+    processedIds.pop_front();
+  processedIds.push_back(server_msg_id);
+}
+
+// --- Ausstehende Sendungen (Retry) ------------------------------------------
+static void removePending(uint64_t client_msg_id) {
+  for (auto it = pendingSends.begin(); it != pendingSends.end();) {
+    if (it->pkg.msg_id == client_msg_id)
+      it = pendingSends.erase(it);
+    else
+      ++it;
+  }
+}
+
+// Sendet alle ausstehenden Nachrichten erneut (mit derselben client_msg_id!),
+// damit der Server Duplikate korrekt dedupliziert. Wird NACH einem Reconnect
+// aufgerufen: Innerhalb einer bestehenden TCP-Verbindung ist kein Retry nötig
+// (TCP garantiert zuverlässige Zustellung) – erst die neue Verbindung muss die
+// noch unbestätigten Nachrichten erneut zustellen.
+void resendPendingSends() {
+  uint32_t now = nowMs();
+  for (auto& ps : pendingSends) {
+    if (!sendPackageBytes(ps.pkg)) {
+      // Socket wieder defekt -> abbrechen, sendAll schaltet auf TCP_CONNECT um.
+      return;
+    }
+    ps.last_send_ms = now;
+    ps.retries++;
+    ESP_LOGW(TAG, "RESEND client_msg_id=%llu (Reconnect, Versuch %d)",
+             (unsigned long long)ps.pkg.msg_id, ps.retries);
+  }
+}
+
+// =============================================================================
+// Empfangen
+// =============================================================================
 void receivePackage() {
   Package incoming;
 
-  // Ein Paket beginnt immer mit einem 3-Byte-Header (status + size).
-  uint8_t header[3];
-  if (!recvAll(header, 3))
+  // 11-Byte-Header lesen: status (1) + msg_id (8) + size (2).
+  uint8_t header[11];
+  if (!recvAll(header, sizeof(header)))
     return;
 
   incoming.status = header[0];
-  incoming.size = (uint16_t(header[1]) << 8) | header[2];  // Big-Endian
+  uint64_t msg_id = 0;
+  for (int i = 0; i < 8; i++)
+    msg_id = (msg_id << 8) | header[1 + i];
+  incoming.msg_id = msg_id;
+  incoming.size = (uint16_t(header[9]) << 8) | header[10];
 
-  // Dann den Payload in der im Header angegebenen Größe lesen.
   incoming.payload.resize(incoming.size);
   if (!recvAll(incoming.payload.data(), incoming.size))
     return;
 
-  ESP_LOGI(TAG, "%s", packageToText(incoming).c_str());
-
-  // Empfangenes Paket an die Wiedergabe (playbackQueue) weiterreichen.
-  if (!putPackageIntoQueue(playbackQueue, incoming))
-    ESP_LOGW(TAG, "playbackQueue overflow");
-
-  // Bestätigungen (status 2) und Server-Check-Antworten (status 3) brauchen
-  // keine weitere Bestätigung -> hier abbrechen.
-  if (incoming.status == 2)
+  // Annahme-ACK vom Server (status 2): ausstehende Sendung entfernen.
+  if (incoming.status == 2) {
+    ESP_LOGI(TAG, "RECV acceptance ACK client_msg_id=%llu -> aus pending entfernt",
+             (unsigned long long)incoming.msg_id);
+    removePending(incoming.msg_id);
     return;
-  if (incoming.status == 3)
-    return;
+  }
 
-  // Normales Paket (status 1): dem Server eine feste Bestätigung zurücksenden.
-  sendConfirmation();
+  // Keepalive-Antwort (status 0): ignorieren.
+  if (incoming.status == 0) {
+    ESP_LOGI(TAG, "RECV keepalive");
+    return;
+  }
+
+  // Nachricht (status 1) oder Check-Echo (status 3): abspielen + bestätigen.
+  if (incoming.status == 1 || incoming.status == 3) {
+    ESP_LOGI(TAG, "RECV %s server_msg_id=%llu size=%u payload=%s",
+             incoming.status == 1 ? "msg" : "check",
+             (unsigned long long)incoming.msg_id, incoming.size,
+             packageToText(incoming).c_str());
+    if (alreadyProcessed(incoming.msg_id)) {
+      // Bereits verarbeitet (verlorenes ACK) -> nur erneut bestätigen.
+      ESP_LOGI(TAG, "  duplicate -> SEND delivery ACK erneut");
+      sendAck(incoming.msg_id);
+      return;
+    }
+    markProcessed(incoming.msg_id);
+    if (!putPackageIntoQueue(playbackQueue, incoming))
+      ESP_LOGW(TAG, "playbackQueue overflow");
+    sendAck(incoming.msg_id);
+    return;
+  }
+
+  ESP_LOGW(TAG, "Unbekannter Status: %u", incoming.status);
 }
 
+// =============================================================================
+// Senden
+// =============================================================================
 void sendPackage() {
   Package outgoing;
   // Gibt es überhaupt ein zu sendendes Paket?
   if (uxQueueMessagesWaiting(sendQueue) == 0)
     return;
-  getPackageFromQueue(sendQueue, outgoing);
+  if (!getPackageFromQueue(sendQueue, outgoing))
+    return;
 
-  // Komplettes Paket zusammensetzen: Header (3 Bytes) + Payload.
-  std::vector<uint8_t> packet;
-  packet.push_back(outgoing.status);                 // Byte 0: status
-  packet.push_back((outgoing.size >> 8) & 0xFF);     // Byte 1: size (High)
-  packet.push_back(outgoing.size & 0xFF);            // Byte 2: size (Low)
-  packet.insert(packet.end(), outgoing.payload.begin(), outgoing.payload.end());
+  // Neue, eindeutige client_msg_id vergeben (für Retry-Erkennung am Server).
+  outgoing.msg_id = newClientMsgId();
 
-  // Paket senden (blockiert max. SO_SNDTIMEO = 5 s).
-  sendAll(packet.data(), packet.size());
+  if (!sendPackageBytes(outgoing)) {
+    // Socket defekt: Nachricht zurücklegen, nach Reconnect erneut senden.
+    if (!putPackageIntoQueue(sendQueue, outgoing))
+      ESP_LOGW(TAG, "sendQueue overflow");
+    return;
+  }
+
+  ESP_LOGI(TAG, "SEND msg client_msg_id=%llu size=%u (wartet auf ACK)",
+           (unsigned long long)outgoing.msg_id, outgoing.size);
+
+  PendingSend ps;
+  ps.pkg = outgoing;
+  ps.last_send_ms = nowMs();
+  ps.retries = 0;
+  pendingSends.push_back(ps);
 }

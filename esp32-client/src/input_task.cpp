@@ -13,6 +13,7 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -54,10 +55,16 @@ void InputTask(void* pvParameters) {
     {
       last_pressed = nowMs();
 
+      // Fortschritt: ein Punkt pro Aufnahme-Frame (1 Byte) auf EINER Zeile.
+      // So sieht man, wann die Aufnahme startet und wie lange sie läuft –
+      // ohne das Log mit "Time until send"-Zeilen zu fluten.
+      printf("record: ");
+      fflush(stdout);
+
       // Aufnehmen, bis RECORDING_TIMEOUT_MS lang nichts mehr gedrückt wurde.
       while (nowMs() - last_pressed < RECORDING_TIMEOUT_MS) {
-        // Debug-Ausgabe: Restzeit bis zum automatischen Senden.
-        ESP_LOGI(TAG, "Time until send: %u", (unsigned)(RECORDING_TIMEOUT_MS + last_pressed - nowMs()));
+        printf(".");
+        fflush(stdout);
 
         // Einen "Frame" = 8 Abtastungen = 1 Byte aufnehmen.
         uint8_t signal = 0;
@@ -71,9 +78,12 @@ void InputTask(void* pvParameters) {
         }
         package.payload.push_back(signal);  // fertiges Byte anhängen
       }
+      printf("\n");
+      fflush(stdout);
 
       // --- Paket ist fertig: passenden Zielort wählen. ---
       package.size = package.payload.size();
+      ESP_LOGI(TAG, "Aufnahme fertig: %u Bytes", (unsigned)package.size);
 
       if (SELF_CHECK_MODE) {
         // Selbsttest: direkt an die Wiedergabe schicken (kein Netzwerk).

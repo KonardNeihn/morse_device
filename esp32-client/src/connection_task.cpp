@@ -5,7 +5,7 @@
 // Kreislauf aus vier Zuständen ab:
 //
 //   WIFI_CONNECT  ->  WLAN suchen/verbinden (erst ssid, dann ssid2)
-//   DNS_RESOLVE   ->  Hostname des Servers in eine IPv6-Adresse auflösen
+//   DNS_RESOLVE   ->  Hostname des Servers in eine IPv4-Adresse auflösen
 //   TCP_CONNECT   ->  TCP-Verbindung zum Server aufbauen
 //   RUNNING       ->  Dauerbetrieb: eingehende Morse-Pakete empfangen und
 //                     wartende Pakete an den Server senden
@@ -55,18 +55,33 @@ void ConnectionTask(void* pvParameters) {
         if (was_connected) {
           vTaskDelay(pdMS_TO_TICKS(1000));
           if (wifiIsConnected()) {
-            state = WAIT_FOR_IP6;  // erst IPv6 abwarten, dann DNS/TCP
+            // WLAN steht schon -> nur noch auf die IPv4-Adresse (DHCP) warten.
+            if (waitForIPv4Address()) {
+              state = DNS_RESOLVE;
+            } else {
+              esp_wifi_disconnect();  // sonst Endlosschleife, wenn keine IP kommt
+              state = WIFI_CONNECT;
+            }
             ESP_LOGI(TAG, "WiFi reconnected alone");
             break;
           }
 
           ESP_LOGI(TAG, "reconnecting Wifi...");
+          resetWifiAbort();  // Ab JETZT zählt ein endgültiger Treiber-Fehler als Abbruch-Grund
           esp_wifi_connect();  // Verbindungsaufbau zum konfigurierten AP erneut anstoßen
-          for (int i = 0; i < 200 && !wifiIsConnected(); i++)
+          // Warten, aber SOFORT abbrechen, wenn der Treiber einen endgültigen
+          // Fehler meldet (NO_AP_FOUND, ...), genau wie in connectWifi().
+          for (int i = 0; i < 200 && !wifiIsConnected() && !wifiAbortRequested(); i++)
             vTaskDelay(pdMS_TO_TICKS(50));
 
           if (wifiIsConnected()) {
-            state = WAIT_FOR_IP6;  // erst IPv6 abwarten, dann DNS/TCP
+            // Wieder verbunden -> auf die IPv4-Adresse (DHCP) warten.
+            if (waitForIPv4Address()) {
+              state = DNS_RESOLVE;
+            } else {
+              esp_wifi_disconnect();  // sonst Endlosschleife, wenn keine IP kommt
+              state = WIFI_CONNECT;
+            }
             ESP_LOGI(TAG, "WiFi reconnected");
             break;
           } else {
@@ -91,20 +106,6 @@ void ConnectionTask(void* pvParameters) {
         // Beide Netze nicht erreichbar -> Neustart (hilft bei WLAN oft).
         ESP_LOGW(TAG, "Restarting...");
         esp_restart();  // ESP32 komplett neu starten (wie Reset-Knopf)
-        break;
-
-      case WAIT_FOR_IP6:
-        // Nach einer WLAN-(Re-)Verbindung auf die globale IPv6-Adresse warten.
-        // Ohne sie ist der IPv6-Server nicht erreichbar ("Host is unreachable",
-        // Fehler 118). Erst danach DNS auflösen und TCP verbinden.
-        if (waitForIPv6Address()) {
-          state = DNS_RESOLVE;
-        } else {
-          // Kein IPv6 bekommen -> WLAN vollständig neu aufbauen.
-          ESP_LOGW(TAG, "No IPv6, full WiFi reconnect");
-          esp_wifi_disconnect();  // Verbindung trennen, damit der Neuaufbau sauber startet
-          state = WIFI_CONNECT;
-        }
         break;
 
       case DNS_RESOLVE:
@@ -139,6 +140,12 @@ void ConnectionTask(void* pvParameters) {
         if (connectTCP(retry_counter)) {
           retry_counter = 0;
           state = RUNNING;
+          // Nach jedem Verbinden die eigene MAC-Adresse registrieren,
+          // damit der Server gepufferte Nachrichten zustellen kann.
+          sendRegister();
+          // Ausstehende, noch nicht bestätigte Nachrichten erneut senden
+          // (nach einem Reconnect ist die alte Verbindung nicht mehr sicher).
+          resendPendingSends();
         } else {
           disconnectTCP();
           vTaskDelay(pdMS_TO_TICKS(1000));
@@ -160,10 +167,14 @@ void ConnectionTask(void* pvParameters) {
         // Nicht blockierend prüfen, ob eingehende Daten vorhanden sind.
         bool readable;
         if (checkSocket(readable)) {
-          // Daten vom Server da? -> Paket empfangen und an die Wiedergabe
-          // (playbackQueue -> PlaybackTask) weiterreichen.
-          if (readable)
+          // Backpressure: Nur lesen, wenn die Wiedergabe-Queue Platz hat.
+          // Sonst bleibt das Paket im TCP-Puffer (und im Server-Buffer) und
+          // wird erst gelesen + bestätigt, wenn wieder Platz ist.
+          if (readable && uxQueueMessagesWaiting(playbackQueue) < QUEUE_SIZE) {
+            // Paket vom Server empfangen und an die Wiedergabe
+            // (playbackQueue -> PlaybackTask) weiterreichen.
             receivePackage();
+          }
           // Versuchen, wartende Pakete (von InputTask) zu senden.
           // sendPackage() prüft selbst, ob etwas in der sendQueue liegt.
           sendPackage();

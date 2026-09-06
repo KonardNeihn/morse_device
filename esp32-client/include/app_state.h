@@ -15,13 +15,11 @@
 
 // Die Zustände der Netzwerk-Zustandsmaschine (siehe connection_task.cpp):
 //   WIFI_CONNECT  ->  WLAN verbinden
-//   WAIT_FOR_IP6  ->  auf IPv6-Adresse warten (nur Durchgangszustand)
 //   DNS_RESOLVE   ->  Hostname auflösen
 //   TCP_CONNECT   ->  TCP-Verbindung aufbauen
 //   RUNNING       ->  normaler Betrieb (senden/empfangen)
 enum ConnectionState {
   WIFI_CONNECT,
-  WAIT_FOR_IP6,
   DNS_RESOLVE,
   TCP_CONNECT,
   RUNNING

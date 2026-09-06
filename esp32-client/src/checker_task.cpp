@@ -41,10 +41,6 @@ void CheckerTask(void* pvParameters) {
         showStatus(1);  // 1x blinken
         break;
 
-      case WAIT_FOR_IP6:
-        showStatus(2);  // 2x blinken
-        break;
-
       case DNS_RESOLVE:
         showStatus(3);  // 3x blinken
         break;

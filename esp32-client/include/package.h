@@ -17,11 +17,13 @@
 
 // status-Feld eines Pakets:
 //   0 -> keep alive (Verbindung am Leben halten)
-//   1 -> normales Morse-Paket (an den Server)
-//   2 -> Bestätigung "Paket empfangen"
-//   3 -> server_check_mode (Paket wird zum Server zurückgeschickt)
+//   1 -> normale Morse-Nachricht (Broadcast)
+//   2 -> Bestätigung (je Richtung: Zustell-ACK bzw. Annahme-ACK)
+//   3 -> server_check (Server sendet zurück statt zu broadcasten)
+//   4 -> register (Payload = 6-Byte-MAC)
 struct Package {
   uint8_t status = 0;
+  uint64_t msg_id = 0;                // je Richtung: client_msg_id oder server_msg_id
   uint16_t size = 0;                  // Anzahl Bytes; reicht für ~87 Minuten Morse
   std::vector<uint8_t> payload;       // die eigentlichen Morse-Daten (dynamisch)
 };
