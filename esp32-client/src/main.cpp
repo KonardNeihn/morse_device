@@ -14,7 +14,6 @@
 //
 // ToDo:
 // - Client Webserver AP zum WLAN eingeben oder gar log auslesen? ap und sta gleichzeitig?
-// - nachrichten auf server zwischenspeichern
 //
 // =============================================================================
 
