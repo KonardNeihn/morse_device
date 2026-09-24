@@ -9,13 +9,16 @@ idf_component_register(
         "network.cpp"
         "package.cpp"
         "playback_task.cpp"
+        "portal.cpp"
         "print_task.cpp"
         "printer.cpp"
+        "wifi_config.cpp"
     INCLUDE_DIRS "../include"
     REQUIRES
         esp_wifi
         esp_netif
         esp_event
+        esp_http_server
         nvs_flash
         esp_driver_uart
         esp_driver_ledc

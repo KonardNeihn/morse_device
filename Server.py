@@ -353,7 +353,7 @@ class Clienthandler:
             entry["recent"].popitem(last=False)
 
     def _on_disconnect(self, reason="unknown"):
-        log_event("----", "DISCONNECT", mac=self.mac, note=f"reason={reason} addr={self.client_address}")
+        log_event("----", "DISCONNECT", mac=self.mac, note=f"addr={self.client_address} reason={reason}")
         try:
             self.client_socket.close()
         except OSError:

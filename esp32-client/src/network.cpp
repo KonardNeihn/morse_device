@@ -151,6 +151,28 @@ static const char* wifiEventName(int32_t id) {
     case WIFI_EVENT_STA_AUTHMODE_CHANGE: return "STA_AUTHMODE_CHANGE";
     case WIFI_EVENT_STA_BEACON_TIMEOUT: return "STA_BEACON_TIMEOUT";
     case WIFI_EVENT_HOME_CHANNEL_CHANGE: return "HOME_CHANNEL_CHANGE";
+
+    // WPS (Station als Enrollee)
+    case WIFI_EVENT_STA_WPS_ER_SUCCESS: return "STA_WPS_ER_SUCCESS";
+    case WIFI_EVENT_STA_WPS_ER_FAILED: return "STA_WPS_ER_FAILED";
+    case WIFI_EVENT_STA_WPS_ER_TIMEOUT: return "STA_WPS_ER_TIMEOUT";
+    case WIFI_EVENT_STA_WPS_ER_PIN: return "STA_WPS_ER_PIN";
+    case WIFI_EVENT_STA_WPS_ER_PBC_OVERLAP: return "STA_WPS_ER_PBC_OVERLAP";
+
+    // Soft-AP (Hotspot)
+    case WIFI_EVENT_AP_START: return "AP_START";
+    case WIFI_EVENT_AP_STOP: return "AP_STOP";
+    case WIFI_EVENT_AP_STACONNECTED: return "AP_STACONNECTED";
+    case WIFI_EVENT_AP_STADISCONNECTED: return "AP_STADISCONNECTED";
+    case WIFI_EVENT_AP_PROBEREQRECVED: return "AP_PROBEREQRECVED";
+
+    // WPS (Soft-AP als Registrar)
+    case WIFI_EVENT_AP_WPS_RG_SUCCESS: return "AP_WPS_RG_SUCCESS";
+    case WIFI_EVENT_AP_WPS_RG_FAILED: return "AP_WPS_RG_FAILED";
+    case WIFI_EVENT_AP_WPS_RG_TIMEOUT: return "AP_WPS_RG_TIMEOUT";
+    case WIFI_EVENT_AP_WPS_RG_PIN: return "AP_WPS_RG_PIN";
+    case WIFI_EVENT_AP_WPS_RG_PBC_OVERLAP: return "AP_WPS_RG_PBC_OVERLAP";
+
     default: return "UNKNOWN";
   }
 }
@@ -159,6 +181,8 @@ static const char* ipEventName(int32_t id) {
   switch (id) {
     case IP_EVENT_STA_GOT_IP: return "STA_GOT_IP";
     case IP_EVENT_STA_LOST_IP: return "STA_LOST_IP";
+    case IP_EVENT_ASSIGNED_IP_TO_CLIENT: return "ASSIGNED_IP_TO_CLIENT";
+    case IP_EVENT_GOT_IP6: return "GOT_IP6";
     case IP_EVENT_NETIF_UP: return "NETIF_UP";
     case IP_EVENT_NETIF_DOWN: return "NETIF_DOWN";
     default: return "UNKNOWN";
@@ -236,6 +260,11 @@ void wifiInit() {
 // deshalb reicht eine kurze Warteschleife (bis zu ~20 s).
 bool waitForIPv4Address() {
   for (int i = 0; i < 40; i++) {
+    // Neue WLAN-Daten gespeichert? -> aktuellen Versuch abbrechen, damit die
+    // neue Konfiguration sofort übernommen wird (statt erst nach ~20 s).
+    if (wifiReconnectRequested)
+      return false;
+
     // WLAN inzwischen abgebrochen? -> sofort aufgeben.
     if (!wifiIsConnected())
       return false;
@@ -272,31 +301,40 @@ bool connectWifi(const char ssid[], const char password[]) {
   disconnectTCP();
   state = WIFI_CONNECT;
 
-  // WLAN-Treiber sauber neu aufsetzen: erst Verbindung trennen, dann stoppen.
-  esp_wifi_disconnect();
-  esp_wifi_stop();
-
-  // Betriebsmodus festlegen: WIFI_MODE_STA = Station (Client, kein Access Point).
-  if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
-    ESP_LOGE(TAG, "set_mode STA failed");
-    return false;
-  }
-
   // SSID (Netzwerkname) und Passwort in die Konfiguration kopieren.
   wifi_config_t wifi_config = {};
   strlcpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid, sizeof(wifi_config.sta.ssid));
   strlcpy(reinterpret_cast<char*>(wifi_config.sta.password), password, sizeof(wifi_config.sta.password));
 
-  // Die Konfiguration (SSID/Passwort) an den WLAN-Treiber übergeben.
-  if (esp_wifi_set_config(WIFI_IF_STA, &wifi_config) != ESP_OK) {
-    ESP_LOGE(TAG, "set_config failed");
-    return false;
-  }
+  // Aktuellen Betriebsmodus abfragen. Im Hotspot-Modus läuft der ESP als APSTA
+  // (AP + STA gleichzeitig). Dann darf der AP hier NICHT abgeschaltet werden –
+  // es wird nur die STA neu konfiguriert und verbunden.
+  wifi_mode_t mode = WIFI_MODE_STA;
+  esp_wifi_get_mode(&mode);
 
-  // WLAN-Treiber (wieder) starten.
-  if (esp_wifi_start() != ESP_OK) {
-    ESP_LOGE(TAG, "wifi start failed");
-    return false;
+  if (mode == WIFI_MODE_APSTA) {
+    esp_wifi_disconnect();  // trennt nur die STA, der AP bleibt aktiv
+    if (esp_wifi_set_config(WIFI_IF_STA, &wifi_config) != ESP_OK) {
+      ESP_LOGE(TAG, "set_config STA failed");
+      return false;
+    }
+  } else {
+    // Reiner STA-Betrieb: WLAN-Treiber sauber neu aufsetzen.
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+      ESP_LOGE(TAG, "set_mode STA failed");
+      return false;
+    }
+    if (esp_wifi_set_config(WIFI_IF_STA, &wifi_config) != ESP_OK) {
+      ESP_LOGE(TAG, "set_config failed");
+      return false;
+    }
+    if (esp_wifi_start() != ESP_OK) {
+      ESP_LOGE(TAG, "wifi start failed");
+      return false;
+    }
   }
 
   ESP_LOGI(TAG, "Connecting to %s", ssid);
@@ -313,8 +351,8 @@ bool connectWifi(const char ssid[], const char password[]) {
 
   // Auf Verbindung warten (max. ~10 s), aber SOFORT abbrechen, sobald der
   // Treiber einen endgültigen Fehler meldet (AP nicht gefunden, falsches
-  // Passwort, ...). Das spart bei fehlenden Netzen mehrere Sekunden.
-  for (int i = 0; i < 200 && !wifi_connect_aborted; i++) {
+  // Passwort, ...) oder der Nutzer im Portal neue WLAN-Daten gespeichert hat.
+  for (int i = 0; i < 200 && !wifi_connect_aborted && !wifiReconnectRequested; i++) {
     if (wifiIsConnected())
       break;
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -345,6 +383,19 @@ int wifiRssi() {
   return -127;  // -127 = kein Signal / nicht verbunden
 }
 
+bool wifiStaIp(char* buf, size_t len) {
+  if (buf == nullptr || len == 0)
+    return false;
+  buf[0] = '\0';
+
+  esp_netif_ip_info_t info;
+  if (esp_netif_get_ip_info(sta_netif, &info) != ESP_OK || info.ip.addr == 0)
+    return false;
+
+  snprintf(buf, len, "%s", inet_ntoa(info.ip));
+  return true;
+}
+
 const char* disconnectReason(uint8_t reason) {
   switch (reason) {
     case WIFI_REASON_UNSPECIFIED: return "UNSPECIFIED";
@@ -361,6 +412,7 @@ const char* disconnectReason(uint8_t reason) {
     case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
     case WIFI_REASON_AUTH_FAIL: return "AUTH_FAIL";
     case WIFI_REASON_ASSOC_FAIL: return "ASSOC_FAIL";
+    case WIFI_REASON_STA_LEAVING: return "STA_LEAVING";
     default: return "UNKNOWN";
   }
 }

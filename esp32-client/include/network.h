@@ -26,6 +26,7 @@ bool waitForIPv4Address();
 
 bool wifiIsConnected();  // true = mit einem Access Point verbunden
 int wifiRssi();          // Signalstärke in dBm (-127 = nicht verbunden)
+bool wifiStaIp(char* buf, size_t len);  // STA-IPv4 als Text (false = keine Adresse)
 
 // Debug-Helfer: WLAN-Abbruchgrund als lesbarer Text.
 const char* disconnectReason(uint8_t reason);

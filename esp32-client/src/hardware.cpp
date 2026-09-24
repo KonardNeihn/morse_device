@@ -55,7 +55,7 @@ void hardwareInit() {
   gpio_config_t in = {};
   in.pin_bit_mask = (1ULL << NORMAL_MODE_PIN) | (1ULL << NO_SOUND_MODE_PIN) |
                     (1ULL << NO_PRINTER_MODE_PIN) | (1ULL << SELF_CHECK_MODE_PIN) |
-                    (1ULL << SERVER_CHECK_MODE_PIN) | (1ULL << RICK_ROLL_MODE_PIN);
+                    (1ULL << SERVER_CHECK_MODE_PIN) | (1ULL << HOTSPOT_MODE_PIN);
   in.mode = GPIO_MODE_INPUT;
   in.pull_up_en = GPIO_PULLUP_DISABLE;
   in.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -125,7 +125,7 @@ void checkPins() {
   NO_PRINTER_MODE = (gpio_get_level((gpio_num_t)NO_PRINTER_MODE_PIN) == 0);
   SELF_CHECK_MODE = (gpio_get_level((gpio_num_t)SELF_CHECK_MODE_PIN) == 0);
   SERVER_CHECK_MODE = (gpio_get_level((gpio_num_t)SERVER_CHECK_MODE_PIN) == 0);
-  RICK_ROLL_MODE = (gpio_get_level((gpio_num_t)RICK_ROLL_MODE_PIN) == 0);
+  HOTSPOT_MODE = (gpio_get_level((gpio_num_t)HOTSPOT_MODE_PIN) == 0);
 }
 
 void testMosfet() {

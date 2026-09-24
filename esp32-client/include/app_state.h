@@ -39,7 +39,11 @@ extern volatile bool NO_SOUND_MODE;      // Ton aus
 extern volatile bool NO_PRINTER_MODE;    // Drucker aus
 extern volatile bool SELF_CHECK_MODE;    // Selbsttest (ohne Netzwerk)
 extern volatile bool SERVER_CHECK_MODE;  // Pakete zum Server zurückschicken
-extern volatile bool RICK_ROLL_MODE;     // Rick Roll (Spaß-Modus)
+extern volatile bool HOTSPOT_MODE;        // Hotspot-Modus (AP + Webserver)
+
+// Wird vom Portal (HTTP-Handler) gesetzt, sobald neue WLAN-Daten gespeichert
+// wurden. Der ConnectionTask verbindet dann mit den neuen Zugangsdaten neu.
+extern volatile bool wifiReconnectRequested;
 
 // Kommunikationskanäle zwischen den Tasks.
 // Es werden Zeiger auf Package-Objekte durchgereicht (Inhalt liegt im Heap).

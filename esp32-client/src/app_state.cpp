@@ -18,7 +18,8 @@ volatile bool NO_SOUND_MODE = false;
 volatile bool NO_PRINTER_MODE = false;
 volatile bool SELF_CHECK_MODE = false;
 volatile bool SERVER_CHECK_MODE = false;
-volatile bool RICK_ROLL_MODE = false;
+volatile bool HOTSPOT_MODE = false;
+volatile bool wifiReconnectRequested = false;
 
 // Queues: werden in main.cpp mit xQueueCreate() angelegt und hier befüllt.
 QueueHandle_t sendQueue;

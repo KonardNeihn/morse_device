@@ -3,19 +3,21 @@
 // =============================================================================
 // config.h  –  Zentrale Konfiguration des Morse-Clients
 //
-// Alle "Schräubchen zum Drehen" an EINER Stelle. Wenn du z. B. WLAN-Daten
-// oder die Tonhöhe ändern willst, musst du nur diese Datei anfassen.
+// Alle "Schräubchen zum Drehen" an EINER Stelle. Wenn du z. B. die Tonhöhe
+// oder den Namen des Konfigurations-Hotspots ändern willst, musst du nur
+// diese Datei anfassen.
 // =============================================================================
 
-// ------------------------- WLAN-Zugangsdaten -------------------------
-// Erstes (primäres) WLAN und zweites (Fallback-) WLAN.
-constexpr const char* ssid = "GameOfWlan";
-constexpr const char* password = "thenorthremembers";
-constexpr const char* ssid2 = "Fairphone 6";
-constexpr const char* password2 = "Hurensohn";
+// ------------------------- Hotspot (Konfigurations-AP) -----------------
+// Offener Access Point, über den man per Handy-Browser die WLANs einstellt.
+// Die WLAN-Zugangsdaten selbst werden persistent im NVS gespeichert
+// (siehe wifi_config.h/.cpp) und über die Portal-Webseite konfiguriert.
+#define AP_SSID "Morse"   // Name des offenen Hotspots
+#define AP_CHANNEL 1      // Funkkanal des Hotspots
+#define AP_MAX_CONN 4     // max. gleichzeitig verbundene Clients
 
 // ------------------------- Server-Konfiguration ----------------------
-constexpr const char* server_address = "morse.ddns.berlin";  // Hostname des Servers
+constexpr const char* server_address = "morse-server.de";  // Hostname des Servers
 constexpr int port = 6969;                                   // Port des Servers (Senden)
 
 // ------------------------- Timing -------------------------------------
@@ -41,5 +43,5 @@ constexpr int port = 6969;                                   // Port des Servers
 #define NO_PRINTER_MODE_PIN 25    // Drehschalter: ohne Drucker
 #define SELF_CHECK_MODE_PIN 33    // Drehschalter: Selbsttest
 #define SERVER_CHECK_MODE_PIN 32  // Drehschalter: Server-Check
-#define RICK_ROLL_MODE_PIN 35     // Drehschalter: Rick Roll
+#define HOTSPOT_MODE_PIN 35      // Drehschalter: Hotspot/Config-Portal
 

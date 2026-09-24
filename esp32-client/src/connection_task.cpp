@@ -25,6 +25,8 @@
 #include "app_state.h"
 #include "config.h"
 #include "network.h"
+#include "portal.h"
+#include "wifi_config.h"
 
 static const char* TAG = "connection";
 
@@ -48,8 +50,31 @@ void ConnectionTask(void* pvParameters) {
       continue;
     }
 
+    // Hotspot-Modus: AP + Webserver laufen PARALLEL zum normalen Betrieb
+    // (APSTA = Access Point und Station gleichzeitig).
+    if (HOTSPOT_MODE && !portalIsActive())
+      portalStart();
+    else if (!HOTSPOT_MODE && portalIsActive())
+      portalStop();
+
+    // Neue WLAN-Daten wurden im Portal gespeichert -> sauber neu verbinden.
+    if (wifiReconnectRequested) {
+      wifiReconnectRequested = false;
+      disconnectTCP();
+      was_connected = false;
+      state = WIFI_CONNECT;
+    }
+
     switch (state) {
       case WIFI_CONNECT:
+        // Ohne gespeicherte WLAN-Daten gibt es nichts zu verbinden. Warten,
+        // bis der Nutzer sie über den Hotspot-Modus eingetragen hat.
+        if (getSsid1()[0] == '\0') {
+          ESP_LOGI(TAG, "No WiFi set");
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          break;
+        }
+
         // Schon mal verbunden gewesen? Dann zuerst versuchen, die alte
         // Verbindung wiederherzustellen, bevor neu gestartet wird.
         if (was_connected) {
@@ -90,22 +115,22 @@ void ConnectionTask(void* pvParameters) {
         }
 
         // Erste WLAN-Verbindung: primäres Netzwerk versuchen.
-        if (connectWifi(ssid, password)) {
+        if (connectWifi(getSsid1(), getPassword1())) {
           state = DNS_RESOLVE;
           was_connected = true;
           break;
         }
 
         // Wenn das primäre Netz fehlschlägt: zweites Netzwerk als Fallback.
-        if (connectWifi(ssid2, password2)) {
+        if (connectWifi(getSsid2(), getPassword2())) {
           state = DNS_RESOLVE;
           was_connected = true;
           break;
         }
 
         // Beide Netze nicht erreichbar -> Neustart (hilft bei WLAN oft).
-        ESP_LOGW(TAG, "Restarting...");
-        esp_restart();  // ESP32 komplett neu starten (wie Reset-Knopf)
+        //ESP_LOGW(TAG, "Restarting...");
+        //esp_restart();  // ESP32 komplett neu starten (wie Reset-Knopf)
         break;
 
       case DNS_RESOLVE:

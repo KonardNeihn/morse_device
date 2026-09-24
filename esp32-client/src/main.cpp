@@ -12,8 +12,9 @@
 //
 // Danach läuft alles nebenläufig über FreeRTOS-Tasks weiter.
 //
-// ToDo:
-// - Client Webserver AP zum WLAN eingeben oder gar log auslesen? ap und sta gleichzeitig?
+// Der Hotspot-Modus (Drehschalter) startet einen offenen AP "Morse" samt
+// Webserver + Captive Portal, über den die WLANs konfiguriert werden können
+// (siehe portal.cpp / wifi_config.cpp).
 //
 // =============================================================================
 
@@ -38,6 +39,7 @@
 #include "package.h"
 #include "printer.h"
 #include "tasks.h"
+#include "wifi_config.h"
 
 static const char* TAG = "main";
 
@@ -102,6 +104,7 @@ static int prettyLogVprintf(const char* fmt, va_list args) {
       msg = fmt;
     }
 
+    // Farbige Konsolen-Ausgabe.
     n = printf("%s%c\033[0m (%02u:%02u:%02u.%03u) %-12s: ",
                levelColor(level), level, h, m, s, milli, tag);
     n += vprintf(msg, args);
@@ -136,6 +139,9 @@ static int prettyLogVprintf(const char* fmt, va_list args) {
 // Hängt unsere hübsche Log-Ausgabe ein (ersetzt die Standard-Ausgabe).
 static void logInit() {
   esp_log_set_vprintf(&prettyLogVprintf);
+  // WLAN-Treiber-Spam ("Haven't to connect to a suitable AP now!") über die
+  // Tag-Log-Level unterdrücken (statt über einen fragilen Text-Filter).
+  esp_log_level_set("wifi", ESP_LOG_ERROR);
 }
 
 extern "C" void app_main(void) {
@@ -164,6 +170,9 @@ extern "C" void app_main(void) {
   wifiInit();
   hardwareInit();
   printerInit();
+
+  // Persistente WLAN-Zugangsdaten aus dem NVS laden (falls schon gespeichert).
+  loadWifiConfig();
 
   // Version der ESP-IDF ausgeben (nur zu Info-Zwecken).
   ESP_LOGI(TAG, "ESP-IDF %s", esp_get_idf_version());
