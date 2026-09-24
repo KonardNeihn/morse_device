@@ -4,11 +4,14 @@ import queue
 import struct
 import select
 import time
+import http.server
+import json
 from datetime import datetime
 from enum import Enum
 from collections import OrderedDict, deque
 
 TCP_PORT = 6969
+HTTP_PORT = 80   # Status-Endpoint: http://morse-server.de/ (Port < 1024 -> braucht root/CAP_NET_BIND_SERVICE)
 
 # Status-Codes (müssen zum esp32-client passen)
 STATUS_KEEPALIVE = 0   # Verbindung am Leben halten
@@ -93,6 +96,133 @@ def log_table_header():
     print(f"{'TIME':<12}  {'DIR':<4} {'EVENT':<14} {'MAC':<17} {'MSG_ID':<20} {'LEN':<5} NOTE")
 
 
+def build_status():
+    """Baut eine Live-Übersicht aus dem Speicherzustand (registry + clients).
+
+    Liest NICHT die Logs; die Daten kommen direkt aus den Datenstrukturen,
+    die der Server ohnehin laufend pflegt.
+    """
+    now = time.time()
+
+    with clients_lock:
+        unregistered = [
+            {"addr": f"{c.client_address[0]}:{c.client_address[1]}"}
+            for c in clients
+            if c.mac is None
+        ]
+
+    with registry_lock:
+        devices = []
+        for mac, entry in registry.items():
+            handler = entry["handler"]
+            online = handler is not None
+            addr = None
+            if online:
+                addr = f"{handler.client_address[0]}:{handler.client_address[1]}"
+            devices.append({
+                "mac": fmt_mac(mac),
+                "online": online,
+                "addr": addr,
+                "last_seen": datetime.fromtimestamp(entry["last_seen"]).strftime("%Y-%m-%d %H:%M:%S"),
+                "idle_seconds": int(now - entry["last_seen"]),
+                "buffered": len(entry["buffer"]),
+            })
+
+    devices.sort(key=lambda d: d["mac"])
+
+    return {
+        "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "online_count": sum(1 for d in devices if d["online"]),
+        "total_known": len(devices),
+        "unregistered_connections": unregistered,
+        "server_msg_id": next_server_msg_id,
+        "devices": devices,
+    }
+
+
+def render_html(status):
+    """Baut eine schlichte HTML-Übersicht für den Browser."""
+    parts = []
+    parts.append("<!DOCTYPE html>")
+    parts.append("<html><head><meta charset=\"utf-8\">")
+    parts.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    parts.append("<title>Morse-Server Status</title>")
+    parts.append(
+        "<style>"
+        "body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px}"
+        "h1{font-size:20px}"
+        "table{border-collapse:collapse;width:100%;margin-top:12px}"
+        "th,td{border:1px solid #333;padding:6px 10px;text-align:left;font-size:14px}"
+        ".online{color:#2a7}"
+        ".offline{color:#888}"
+        "</style></head><body>"
+    )
+    parts.append("<h1>Morse-Server Status</h1>")
+    parts.append(
+        f"<p>{status['online_count']} von {status['total_known']} Geräten online "
+        f"(Stand: {status['now']})</p>"
+    )
+    parts.append(
+        "<table><tr><th>MAC</th><th>Status</th><th>Adresse</th>"
+        "<th>Letzter Kontakt</th><th>Idle</th><th>Puffer</th></tr>"
+    )
+    for d in status["devices"]:
+        cls = "online" if d["online"] else "offline"
+        label = "online" if d["online"] else "offline"
+        parts.append(
+            f"<tr class=\"{cls}\"><td>{d['mac']}</td><td>{label}</td>"
+            f"<td>{d['addr'] or '–'}</td><td>{d['last_seen']}</td>"
+            f"<td>{d['idle_seconds']} s</td><td>{d['buffered']}</td></tr>"
+        )
+    parts.append("</table>")
+    if status["unregistered_connections"]:
+        parts.append("<p>Verbindungen ohne Registrierung: ")
+        parts.append(", ".join(c["addr"] for c in status["unregistered_connections"]))
+        parts.append("</p>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+class StatusHandler(http.server.BaseHTTPRequestHandler):
+    """Liefert den Live-Status als JSON (/status) oder HTML (/)."""
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+
+        try:
+            status = build_status()
+        except Exception as e:
+            log(f"Status-Endpoint Fehler: ({type(e).__name__}): {e}", ERROR)
+            body = b"Internal Server Error"
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/status":
+            body = json.dumps(status, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+        elif path in ("/", "/index.html"):
+            body = render_html(status).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        else:
+            body = b"Not Found"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        # Zugriffe landen im Server-Log (journal) statt auf stderr.
+        log("HTTP %s" % (fmt % args), INFO)
+
+
 def reaper_loop():
     """Löscht periodisch MACs, die lange offline waren (inkl. Puffer)."""
     while True:
@@ -108,6 +238,7 @@ def reaper_loop():
 
 def main():
     running = True
+    httpd = None
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -120,6 +251,16 @@ def main():
 
     log("Server startet...", GOOD_INFO)
     log_table_header()
+
+    # --- HTTP-Status-Endpoint (Live-Übersicht, Port 80) ---
+    try:
+        httpd = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), StatusHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        log(f"HTTP-Status-Endpoint auf 0.0.0.0:{HTTP_PORT} (/)", GOOD_INFO)
+    except PermissionError:
+        log(f"HTTP-Status-Endpoint: Port {HTTP_PORT} braucht root oder CAP_NET_BIND_SERVICE", ERROR)
+    except OSError as e:
+        log(f"HTTP-Status-Endpoint konnte nicht starten: {e}", ERROR)
 
     try:
         while running:
@@ -151,6 +292,8 @@ def main():
     finally:
         running = False
         server.close()
+        if httpd is not None:
+            httpd.shutdown()
         # Kopie, um Deadlocks beim Stoppen zu vermeiden
         with clients_lock:
             current_clients = clients.copy()
