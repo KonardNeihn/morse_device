@@ -5,13 +5,17 @@ import struct
 import select
 import time
 import http.server
+import html
 import json
+import re
+import subprocess
 from datetime import datetime
 from enum import Enum
 from collections import OrderedDict, deque
 
 TCP_PORT = 6969
 HTTP_PORT = 80   # Status-Endpoint: http://morse-server.de/ (Port < 1024 -> braucht root/CAP_NET_BIND_SERVICE)
+JOURNAL_UNIT = "morse-server.service"   # systemd-Unit, deren Journal unter /log angezeigt wird
 
 # Status-Codes (müssen zum esp32-client passen)
 STATUS_KEEPALIVE = 0   # Verbindung am Leben halten
@@ -140,24 +144,66 @@ def build_status():
     }
 
 
-def render_html(status):
-    """Baut eine schlichte HTML-Übersicht für den Browser."""
-    parts = []
-    parts.append("<!DOCTYPE html>")
-    parts.append("<html><head><meta charset=\"utf-8\">")
-    parts.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
-    parts.append("<title>Morse-Server Status</title>")
-    parts.append(
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text):
+    """Entfernt ANSI-Farbcodes aus einer Log-Zeile."""
+    return ANSI_RE.sub("", text)
+
+
+def _page_head(title, refresh=None):
+    refresh_meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ''
+    return (
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"{refresh_meta}"
+        f"<title>{title}</title>"
         "<style>"
         "body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px}"
-        "h1{font-size:20px}"
+        "h1{font-size:20px;margin:0 0 4px}"
+        "nav{margin:8px 0 16px}"
+        "nav a{color:#4af;text-decoration:none;margin-right:14px}"
+        "nav a.active{font-weight:bold;text-decoration:underline}"
         "table{border-collapse:collapse;width:100%;margin-top:12px}"
         "th,td{border:1px solid #333;padding:6px 10px;text-align:left;font-size:14px}"
         ".online{color:#2a7}"
         ".offline{color:#888}"
+        "pre{background:#000;padding:12px;border-radius:6px;font-size:12px;"
+        "line-height:1.5;overflow-x:auto;white-space:pre-wrap;max-height:75vh;overflow-y:auto}"
         "</style></head><body>"
     )
+
+
+def _nav(active):
+    return (
+        "<nav>"
+        f"<a href=\"/status\" class=\"{'active' if active == 'status' else ''}\">Status</a>"
+        f"<a href=\"/log\" class=\"{'active' if active == 'log' else ''}\">Log</a>"
+        "</nav>"
+    )
+
+
+def _read_journal():
+    """Liest das Journal der Unit (neueste zuerst) als Liste bereinigter Zeilen."""
+    try:
+        proc = subprocess.run(
+            ["journalctl", "-u", JOURNAL_UNIT, "--no-pager", "--output=cat", "-r"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return [f"Fehler beim Lesen des Journals: ({type(e).__name__}) {e}"]
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or f"rc={proc.returncode}"
+        return [f"journalctl Fehler: {err}"]
+    return [strip_ansi(line) for line in proc.stdout.splitlines()]
+
+
+def render_html(status):
+    """Baut die HTML-Übersicht (Status-Seite) für den Browser."""
+    parts = [_page_head("Morse-Server Status")]
     parts.append("<h1>Morse-Server Status</h1>")
+    parts.append(_nav("status"))
     parts.append(
         f"<p>{status['online_count']} von {status['total_known']} Geräten online "
         f"(Stand: {status['now']})</p>"
@@ -183,40 +229,71 @@ def render_html(status):
     return "\n".join(parts)
 
 
+def render_log_html():
+    """Baut die Log-Seite (alle Journal-Zeilen, neueste zuerst) für den Browser."""
+    lines = _read_journal()
+    parts = [_page_head("Morse-Server Log", refresh=10)]
+    parts.append("<h1>Morse-Server Log</h1>")
+    parts.append(_nav("log"))
+    parts.append(f"<p>{len(lines)} Zeilen (neueste zuerst)</p>")
+    parts.append("<pre>" + "\n".join(html.escape(line) for line in lines) + "</pre>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
 class StatusHandler(http.server.BaseHTTPRequestHandler):
-    """Liefert den Live-Status als JSON (/status) oder HTML (/)."""
+    """Liefert Status (/status), Log (/log) und leitet / auf /status weiter."""
+
+    def _respond(self, code, content_type, body):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _build_status(self):
+        try:
+            return build_status(), None
+        except Exception as e:
+            return None, f"({type(e).__name__}): {e}"
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
 
-        try:
-            status = build_status()
-        except Exception as e:
-            log(f"Status-Endpoint Fehler: ({type(e).__name__}): {e}", ERROR)
-            body = b"Internal Server Error"
-            self.send_response(500)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        # Startseite -> Status-Seite
+        if path in ("/", "/index.html"):
+            self._redirect("/status")
             return
 
         if path == "/status":
-            body = json.dumps(status, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-        elif path in ("/", "/index.html"):
-            body = render_html(status).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-        else:
-            body = b"Not Found"
-            self.send_response(404)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            status, err = self._build_status()
+            if err:
+                log(f"Status-Endpoint Fehler: {err}", ERROR)
+                self._respond(500, "text/plain; charset=utf-8", b"Internal Server Error")
+                return
+            self._respond(200, "text/html; charset=utf-8", render_html(status).encode("utf-8"))
+            return
 
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        if path == "/status.json":
+            status, err = self._build_status()
+            if err:
+                log(f"Status-Endpoint Fehler: {err}", ERROR)
+                self._respond(500, "text/plain; charset=utf-8", b"Internal Server Error")
+                return
+            self._respond(200, "application/json; charset=utf-8", json.dumps(status, indent=2).encode("utf-8"))
+            return
+
+        if path == "/log":
+            self._respond(200, "text/html; charset=utf-8", render_log_html().encode("utf-8"))
+            return
+
+        self._respond(404, "text/plain; charset=utf-8", b"Not Found")
 
     def log_message(self, fmt, *args):
         # Zugriffe landen im Server-Log (journal) statt auf stderr.
