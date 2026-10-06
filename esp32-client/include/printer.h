@@ -3,7 +3,7 @@
 // =============================================================================
 // printer.h  –  Ansteuerung des Thermodruckers (ESC/POS)
 //
-// Der Drucker hängt an UART2 (GPIO17 = TX, GPIO16 = RX) und wird über das
+// Der Drucker hängt an UART1 (GPIO4 = TX, GPIO5 = RX) und wird über das
 // ESC/POS-Protokoll angesprochen. Ein Morse-Paket wird in eine "Grafikzeile"
 // aus zwei übereinanderliegenden Punktreihen übersetzt und gedruckt.
 //

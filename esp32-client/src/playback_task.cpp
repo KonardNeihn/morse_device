@@ -1,5 +1,5 @@
 // =============================================================================
-// playback_task.cpp  –  "Output Task" (CPU 1, Priorität 1)
+// playback_task.cpp  –  "Output Task" (Priorität 1)
 //
 // Nimmt Morse-Pakete aus der playbackQueue (vom Netzwerk) und spielt sie ab:
 // Für jedes Bit wird der Lautsprecher (Ton) und die LED ein-/ausgeschaltet.
@@ -29,15 +29,26 @@ void PlaybackTask(void* pvParameters) {
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(100));  // kleine Pause, damit nicht nur gepollt wird
 
+    // Während der Nutzer selbst morst, keine Pakete abspielen.
+    if (isRecording) {
+      stopTone();
+      gpio_set_level((gpio_num_t)LED, 0);
+      sound_on = false;
+      continue;
+    }
+
     // Kein Paket in der Queue? -> weiter warten.
     if (!getPackageFromQueue(playbackQueue, package))
       continue;
 
     // Paket Byte für Byte und Bit für Bit abarbeiten.
+    bool interrupted = false;  // true, sobald der Nutzer selbst zu morsen beginnt
     for (uint8_t signal : package.payload) {
       uint8_t mask = 0b10000000;  // mit dem höchstwertigen Bit (MSB) beginnen
 
       for (int i = 0; i < 8; i++) {
+        if (isRecording) { interrupted = true; break; }  // Aufnahme gestartet -> abbrechen
+
         if ((signal & mask)) {
           // Bit gesetzt = Ton an. Nur neu einschalten, wenn vorher aus war,
           // sonst gibt es bei mehreren Einsen hintereinander ein "Knacken".
@@ -55,6 +66,7 @@ void PlaybackTask(void* pvParameters) {
         mask >>= 1;
         vTaskDelay(pdMS_TO_TICKS(SAMPLING_RATE_MS));  // Dauer pro Bit
       }
+      if (interrupted) break;
     }
     // Nach dem letzten Bit sicherstellen, dass Ton und LED aus sind.
     stopTone();

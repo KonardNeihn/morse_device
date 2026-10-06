@@ -72,6 +72,8 @@ static std::vector<PendingSend> pendingSends;
 // Zuletzt verarbeitete server_msg_ids (Dedupe gegen doppeltes Zustellen).
 static constexpr size_t PROCESSED_MAX = 32;
 static std::deque<uint64_t> processedIds;
+// server_msg_ids, für die das Zustell-ACK bereits gesendet wurde.
+static std::deque<uint64_t> ackedIds;
 
 static uint32_t nowMs() {
   return (uint32_t)(esp_timer_get_time() / 1000ULL);
@@ -725,6 +727,39 @@ static void markProcessed(uint64_t server_msg_id) {
   processedIds.push_back(server_msg_id);
 }
 
+// --- ACK-Tracking: wurde für diese server_msg_id schon ein ACK gesendet? ----
+static bool alreadyAcked(uint64_t server_msg_id) {
+  for (uint64_t id : ackedIds)
+    if (id == server_msg_id)
+      return true;
+  return false;
+}
+
+static void markAcked(uint64_t server_msg_id) {
+  if (ackedIds.size() >= PROCESSED_MAX)
+    ackedIds.pop_front();
+  ackedIds.push_back(server_msg_id);
+}
+
+// --- Zustell-ACK erst nach dem Druck senden ---------------------------------
+// Vom PrintTask aufgerufen, sobald ein Paket fertig gedruckt ist. Die
+// server_msg_id wird in eine Queue gelegt; der ConnectionTask sendet sie dann
+// über den Socket (so schreibt nie mehr als ein Task in den Socket).
+void queueDeliveryAck(uint64_t server_msg_id) {
+  if (xQueueSend(ackQueue, &server_msg_id, 0) != pdPASS)
+    ESP_LOGW(TAG, "ackQueue overflow (server_msg_id=%llu)",
+             (unsigned long long)server_msg_id);
+}
+
+// Vom ConnectionTask im RUNNING-Zustand aufgerufen: vorgemerkte ACKs senden.
+void sendPendingAcks() {
+  uint64_t id;
+  while (xQueueReceive(ackQueue, &id, 0) == pdPASS) {
+    sendAck(id);
+    markAcked(id);
+  }
+}
+
 // --- Ausstehende Sendungen (Retry) ------------------------------------------
 static void removePending(uint64_t client_msg_id) {
   for (auto it = pendingSends.begin(); it != pendingSends.end();) {
@@ -797,15 +832,26 @@ void receivePackage() {
              (unsigned long long)incoming.msg_id, incoming.size,
              packageToText(incoming).c_str());
     if (alreadyProcessed(incoming.msg_id)) {
-      // Bereits verarbeitet (verlorenes ACK) -> nur erneut bestätigen.
-      ESP_LOGI(TAG, "  duplicate -> SEND delivery ACK erneut");
-      sendAck(incoming.msg_id);
+      if (alreadyAcked(incoming.msg_id)) {
+        // ACK wurde schon gesendet, aber offenbar verloren -> erneut bestätigen.
+        ESP_LOGI(TAG, "  duplicate -> SEND delivery ACK erneut");
+        sendAck(incoming.msg_id);
+      } else {
+        // Druck läuft noch -> ACK folgt nach dem Druck, hier nichts tun.
+        ESP_LOGI(TAG, "  duplicate -> Druck läuft noch, ACK folgt später");
+      }
       return;
     }
     markProcessed(incoming.msg_id);
-    if (!putPackageIntoQueue(playbackQueue, incoming))
-      ESP_LOGW(TAG, "playbackQueue overflow");
-    sendAck(incoming.msg_id);
+    if (!putPackageIntoQueue(playbackQueue, incoming)) {
+      // Queue voll (sollte durch Backpressure nicht passieren): dann sofort
+      // bestätigen, damit die Nachricht nicht unbestätigt hängen bleibt.
+      ESP_LOGW(TAG, "playbackQueue overflow -> ACK sofort senden");
+      sendAck(incoming.msg_id);
+      markAcked(incoming.msg_id);
+    }
+    // KEIN ACK hier: das Zustell-ACK wird erst nach dem Drucken gesendet
+    // (PrintTask -> queueDeliveryAck -> ConnectionTask -> sendPendingAcks).
     return;
   }
 

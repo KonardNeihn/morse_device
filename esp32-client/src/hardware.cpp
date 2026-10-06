@@ -11,6 +11,7 @@
 #include <driver/gpio.h>
 #include <driver/ledc.h>
 #include <esp_log.h>
+#include "esp_adc/adc_oneshot.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -18,6 +19,9 @@
 #include "config.h"
 
 static const char* TAG = "hardware";
+
+// ADC-Handle für den Drehschalter (wird in hardwareInit() angelegt).
+static adc_oneshot_unit_handle_t adc_handle = nullptr;
 
 // LEDC-Konfiguration für den Lautsprecher (PWM).
 // LEDC erzeugt ein Rechtecksignal mit einstellbarer Frequenz (Tonhöhe) und
@@ -51,16 +55,16 @@ void hardwareInit() {
   button.intr_type = GPIO_INTR_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&button));
 
-  // --- Eingänge: Drehschalter (extern hochgezogen, LOW = aktiv). ---
-  gpio_config_t in = {};
-  in.pin_bit_mask = (1ULL << NORMAL_MODE_PIN) | (1ULL << NO_SOUND_MODE_PIN) |
-                    (1ULL << NO_PRINTER_MODE_PIN) | (1ULL << SELF_CHECK_MODE_PIN) |
-                    (1ULL << SERVER_CHECK_MODE_PIN) | (1ULL << HOTSPOT_MODE_PIN);
-  in.mode = GPIO_MODE_INPUT;
-  in.pull_up_en = GPIO_PULLUP_DISABLE;
-  in.pull_down_en = GPIO_PULLDOWN_DISABLE;
-  in.intr_type = GPIO_INTR_DISABLE;
-  ESP_ERROR_CHECK(gpio_config(&in));
+  // --- Drehschalter: 6 Positionen über EINEN ADC-Kanal (Spannungsteiler). ---
+  // Der One-Shot-Driver konfiguriert den GPIO intern als Analog-Eingang.
+  adc_oneshot_unit_init_cfg_t adc_unit = {};
+  adc_unit.unit_id = ADC_UNIT_1;          // der C5 hat nur ADC1
+  ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_unit, &adc_handle));
+
+  adc_oneshot_chan_cfg_t adc_chan = {};
+  adc_chan.atten = ROTARY_ATTEN;          // Messbereich ~0..3,1 V (siehe config.h)
+  adc_chan.bitwidth = ADC_BITWIDTH_12;    // 12 Bit Auflösung (0..4095)
+  ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ROTARY_ADC_CHANNEL, &adc_chan));
 
   // --- LEDC (PWM) für den Lautsprecher. ---
   // LEDC ist der PWM-Controller des ESP32 (erzeugt das Ton-Signal).
@@ -119,13 +123,28 @@ void stopTone() {
 }
 
 void checkPins() {
-  // Drehschalter sind LOW-aktiv: Pin = 0 bedeutet "Modus aktiv".
-  // gpio_get_level() liest den aktuellen Pegel eines Pins (0 = LOW, 1 = HIGH).
-  NO_SOUND_MODE = (gpio_get_level((gpio_num_t)NO_SOUND_MODE_PIN) == 0);
-  NO_PRINTER_MODE = (gpio_get_level((gpio_num_t)NO_PRINTER_MODE_PIN) == 0);
-  SELF_CHECK_MODE = (gpio_get_level((gpio_num_t)SELF_CHECK_MODE_PIN) == 0);
-  SERVER_CHECK_MODE = (gpio_get_level((gpio_num_t)SERVER_CHECK_MODE_PIN) == 0);
-  HOTSPOT_MODE = (gpio_get_level((gpio_num_t)HOTSPOT_MODE_PIN) == 0);
+  // Drehschalter über den ADC einlesen (Spannungsteiler -> 6 Positionen).
+  int raw = 0;
+  if (adc_oneshot_read(adc_handle, ROTARY_ADC_CHANNEL, &raw) != ESP_OK) {
+    ESP_LOGW(TAG, "ADC-Lesen fehlgeschlagen");
+    return;  // alte Modus-Flags unverändert lassen
+  }
+
+  // Position anhand der Schwellwerte bestimmen (siehe config.h).
+  int pos;
+  if      (raw < ROTARY_TH_1) pos = 0;  // NORMAL (alle Flags aus)
+  else if (raw < ROTARY_TH_2) pos = 1;  // NO_SOUND
+  else if (raw < ROTARY_TH_3) pos = 2;  // NO_PRINTER
+  else if (raw < ROTARY_TH_4) pos = 3;  // SELF_CHECK
+  else if (raw < ROTARY_TH_5) pos = 4;  // SERVER_CHECK
+  else                        pos = 5;  // HOTSPOT
+
+  // Genau EIN Modus aktiv; NORMAL = alle Flags false.
+  NO_SOUND_MODE     = (pos == 1);
+  NO_PRINTER_MODE   = (pos == 2);
+  SELF_CHECK_MODE   = (pos == 3);
+  SERVER_CHECK_MODE = (pos == 4);
+  HOTSPOT_MODE      = (pos == 5);
 }
 
 void testMosfet() {

@@ -1,5 +1,5 @@
 // =============================================================================
-// checker_task.cpp  –  "Checker Task" (CPU 1, Priorität 2)
+// checker_task.cpp  –  "Checker Task" (Priorität 2)
 //
 // Liest regelmäßig (ca. jede Sekunde) die Drehschalter ein und schreibt die
 // Modus-Flags. Außerdem zeigt er über die Status-LED, in welchem Netzwerk-
@@ -31,8 +31,8 @@ void CheckerTask(void* pvParameters) {
     //   -70 bis -80 dBm    schwach
     //   < -80 dBm          kritisch
 
-    // Im Selbsttest-Modus keine Status-LED (das Gerät macht gerade Morse).
-    if (SELF_CHECK_MODE)
+    // Im Selbsttest-Modus oder während der Nutzer morst keine Status-LED.
+    if (SELF_CHECK_MODE || isRecording)
       continue;
 
     // Je nach Netzwerk-Zustand ein anderes Blinkmuster zeigen.

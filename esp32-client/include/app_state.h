@@ -54,3 +54,11 @@ extern QueueHandle_t printQueue;     // PlaybackTask -> PrintTask
 // TCP-Socket (Dateideskriptor, -1 = kein Socket offen).
 extern int sock;
 
+// true, solange der InputTask gerade eine Morse-Eingabe aufzeichnet. Dann
+// spielt der PlaybackTask keine Pakete ab und die LED spiegelt die Taste.
+extern volatile bool isRecording;
+
+// Queue für Zustell-ACKs, die erst NACH dem Drucken gesendet werden dürfen.
+// Der PrintTask legt die server_msg_ids hier ab, der ConnectionTask sendet sie.
+extern QueueHandle_t ackQueue;
+

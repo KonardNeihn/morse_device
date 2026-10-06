@@ -1,5 +1,5 @@
 // =============================================================================
-// input_task.cpp  –  "Input Task" (CPU 1, Priorität 1)
+// input_task.cpp  –  "Input Task" (Priorität 1)
 //
 // Liest die Morse-Taste aus und baut daraus ein Morse-Paket. Dazu wird die
 // Taste alle SAMPLING_RATE_MS Millisekunden abgefragt und das Ergebnis als Bit
@@ -54,6 +54,7 @@ void InputTask(void* pvParameters) {
     // --- Taste ist gedrückt: neues Paket aufnehmen. ---
     {
       last_pressed = nowMs();
+      isRecording = true;  // PlaybackTask soll während der Aufnahme nichts abspielen
 
       // Fortschritt: ein Punkt pro Aufnahme-Frame (1 Byte) auf EINER Zeile.
       // So sieht man, wann die Aufnahme startet und wie lange sie läuft –
@@ -73,6 +74,9 @@ void InputTask(void* pvParameters) {
           if (gpio_get_level((gpio_num_t)BUTTON) == 0) {    // Taste gedrückt (LOW)?
             signal++;                                        // -> Bit 1 setzen
             last_pressed = nowMs();                          // Zeitstempel erneuern
+            gpio_set_level((gpio_num_t)LED, 1);              // LED blinkt mit der Morse-Eingabe
+          } else {
+            gpio_set_level((gpio_num_t)LED, 0);              // Taste los -> LED aus
           }
           vTaskDelay(pdMS_TO_TICKS(SAMPLING_RATE_MS)); // eine Abtast-Periode warten
         }
@@ -80,6 +84,9 @@ void InputTask(void* pvParameters) {
       }
       printf("\n");
       fflush(stdout);
+
+      isRecording = false;                        // Aufnahme beendet
+      gpio_set_level((gpio_num_t)LED, 0);         // LED aus
 
       // --- Paket ist fertig: passenden Zielort wählen. ---
       package.size = package.payload.size();

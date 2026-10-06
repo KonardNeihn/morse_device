@@ -89,6 +89,16 @@ static const char* stateText(ConnectionState s) {
   return "Unbekannt";
 }
 
+static int stateIndex(ConnectionState s) {
+  switch (s) {
+    case WIFI_CONNECT: return 0;
+    case DNS_RESOLVE:  return 1;
+    case TCP_CONNECT:  return 2;
+    case RUNNING:      return 3;
+  }
+  return -1;
+}
+
 static void applyApConfig() {
   wifi_config_t ap_cfg = {};
   strlcpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), AP_SSID, sizeof(ap_cfg.ap.ssid));
@@ -225,7 +235,7 @@ static std::string buildHtmlPage() {
   h += "<meta charset=\"utf-8\">\n";
   h += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
   h += "<title>Morse Konfiguration</title>\n";
-  h += "<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px}h1{font-size:20px}label{display:block;margin-top:12px;font-size:14px}input,button{font-size:16px;padding:8px;width:100%;box-sizing:border-box;margin-top:4px}button{background:#2a7;color:#fff;border:0;border-radius:6px;margin-top:16px}#status{margin-top:16px;padding:10px;background:#222;border-radius:6px;font-size:14px}</style>\n";
+  h += "<style>body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px}h1{font-size:20px}label{display:block;margin-top:12px;font-size:14px}input,button{font-size:16px;padding:8px;width:100%;box-sizing:border-box;margin-top:4px}button{background:#2a7;color:#fff;border:0;border-radius:6px;margin-top:16px}#status{margin-top:16px;padding:10px;background:#222;border-radius:6px;font-size:14px}#fsm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px}.step{padding:8px 12px;background:#222;border:2px solid #444;border-radius:6px;font-size:14px}.step.active{background:#2a7;border-color:#6f6;color:#fff;font-weight:bold}.arrow{color:#888}</style>\n";
   h += "</head>\n<body>\n";
   h += "<h1>Morse – WLAN einrichten</h1>\n";
   h += "<form action=\"/save\" method=\"post\">\n";
@@ -249,6 +259,25 @@ static std::string buildHtmlPage() {
   h += "<button type=\"submit\">Speichern &amp; verbinden</button>\n";
   h += "</form>\n";
 
+  // Zustandsmaschine als Diagramm: 4 Zustände, aktiver hervorgehoben.
+  h += "<div id=\"fsm\">\n";
+  for (int i = 0; i < 4; i++) {
+    h += "<div class=\"step";
+    if (i == stateIndex(state)) h += " active";
+    h += "\" data-state=\"";
+    h += std::to_string(i);
+    h += "\">";
+    switch (i) {
+      case 0: h += "WLAN"; break;
+      case 1: h += "DNS"; break;
+      case 2: h += "TCP"; break;
+      case 3: h += "Betrieb"; break;
+    }
+    h += "</div>\n";
+    if (i < 3) h += "<span class=\"arrow\">→</span>\n";
+  }
+  h += "</div>\n";
+
   char ip[32] = { 0 };
   wifiStaIp(ip, sizeof(ip));
   h += "<div id=\"status\">Status: ";
@@ -259,7 +288,15 @@ static std::string buildHtmlPage() {
     h += ip;
     h += ")";
   }
+  if (wifiIsConnected()) {
+    h += " · RSSI: ";
+    h += std::to_string(wifiRssi());
+    h += " dBm";
+  }
   h += "</div>\n";
+
+  // Live-Aktualisierung der Zustandsmaschine und der Werte (ohne Reload).
+  h += "<script>async function refresh(){try{const r=await fetch('/status');const s=await r.json();document.querySelectorAll('#fsm .step').forEach(function(el){el.classList.toggle('active',parseInt(el.dataset.state)===s.state_index);});var t='Status: '+s.state+(s.wifi?' – verbunden':' – nicht verbunden');if(s.ip)t+=' (IP: '+s.ip+')';if(s.rssi!==-127)t+=' · RSSI: '+s.rssi+' dBm';document.getElementById('status').textContent=t;}catch(e){}}setInterval(refresh,1000);refresh();</script>\n";
 
   h += "</body>\n</html>";
   return h;
@@ -275,6 +312,21 @@ static esp_err_t rootHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");  // keine alte Seite cachen
   httpd_resp_sendstr(req, page.c_str());
+  return ESP_OK;
+}
+
+static esp_err_t statusHandler(httpd_req_t* req) {
+  char ip[32] = { 0 };
+  wifiStaIp(ip, sizeof(ip));
+  char json[192];
+  snprintf(json, sizeof(json),
+           "{\"state_index\":%d,\"state\":\"%s\",\"wifi\":%s,\"ip\":\"%s\",\"rssi\":%d}",
+           stateIndex(state), stateText(state),
+           wifiIsConnected() ? "true" : "false",
+           ip, wifiRssi());
+  httpd_resp_set_type(req, "application/json; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_sendstr(req, json);
   return ESP_OK;
 }
 
@@ -348,7 +400,7 @@ static void addHandler(const char* uri, httpd_method_t method,
 
 static void startHttpServer() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 4;
+  cfg.max_uri_handlers = 5;
   cfg.lru_purge_enable = true;
   cfg.uri_match_fn = httpd_uri_match_wildcard;
   if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -359,6 +411,7 @@ static void startHttpServer() {
 
   addHandler("/", HTTP_GET, rootHandler);
   addHandler("/save", HTTP_POST, saveHandler);
+  addHandler("/status", HTTP_GET, statusHandler);
   addHandler("/*", static_cast<httpd_method_t>(HTTP_ANY), rootHandler);  // Captive Portal: alles -> Seite
 }
 

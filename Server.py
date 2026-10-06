@@ -199,32 +199,73 @@ def _read_journal():
     return [strip_ansi(line) for line in proc.stdout.splitlines()]
 
 
-def render_html(status):
-    """Baut die HTML-Übersicht (Status-Seite) für den Browser."""
-    parts = [_page_head("Morse-Server Status")]
-    parts.append("<h1>Morse-Server Status</h1>")
-    parts.append(_nav("status"))
-    parts.append(
-        f"<p>{status['online_count']} von {status['total_known']} Geräten online "
-        f"(Stand: {status['now']})</p>"
-    )
-    parts.append(
-        "<table><tr><th>MAC</th><th>Status</th><th>Adresse</th>"
-        "<th>Letzter Kontakt</th><th>Idle</th><th>Puffer</th></tr>"
-    )
-    for d in status["devices"]:
+def _device_rows_html(devices):
+    """Rendert die Tabellenzeilen aller Geräte."""
+    rows = []
+    for d in devices:
         cls = "online" if d["online"] else "offline"
         label = "online" if d["online"] else "offline"
-        parts.append(
+        rows.append(
             f"<tr class=\"{cls}\"><td>{d['mac']}</td><td>{label}</td>"
             f"<td>{d['addr'] or '–'}</td><td>{d['last_seen']}</td>"
             f"<td>{d['idle_seconds']} s</td><td>{d['buffered']}</td></tr>"
         )
-    parts.append("</table>")
+    return "\n".join(rows)
+
+
+def render_html(status):
+    """Baut die HTML-Übersicht (Status-Seite) für den Browser.
+
+    Die Seite lädt alle 1 s automatisch die JSON-Daten (/status.json) nach und
+    aktualisiert Tabelle + Zusammenfassung per JavaScript, ohne neu zu laden.
+    Ohne JavaScript bleibt die initial gerenderte Ansicht sichtbar.
+    """
+    parts = [_page_head("Morse-Server Status")]
+    parts.append("<h1>Morse-Server Status</h1>")
+    parts.append(_nav("status"))
+    parts.append(
+        f"<p id=\"summary\">{status['online_count']} von {status['total_known']} "
+        f"Geräten online (Stand: {status['now']})</p>"
+    )
+    parts.append(
+        "<table><thead><tr><th>MAC</th><th>Status</th><th>Adresse</th>"
+        "<th>Letzter Kontakt</th><th>Idle</th><th>Puffer</th></tr></thead>"
+        "<tbody id=\"devices\">"
+    )
+    parts.append(_device_rows_html(status["devices"]))
+    parts.append("</tbody></table>")
+
+    unreg = ""
     if status["unregistered_connections"]:
-        parts.append("<p>Verbindungen ohne Registrierung: ")
-        parts.append(", ".join(c["addr"] for c in status["unregistered_connections"]))
-        parts.append("</p>")
+        unreg = "Verbindungen ohne Registrierung: " + ", ".join(
+            c["addr"] for c in status["unregistered_connections"]
+        )
+    parts.append(f"<p id=\"unregistered\">{html.escape(unreg)}</p>")
+
+    parts.append(
+        """<script>
+async function refresh(){
+  try{
+    const r=await fetch('/status.json');const s=await r.json();
+    document.getElementById('summary').textContent=
+      s.online_count+' von '+s.total_known+' Geräten online (Stand: '+s.now+')';
+    document.getElementById('devices').innerHTML=s.devices.map(function(d){
+      var cls=d.online?'online':'offline';
+      var label=d.online?'online':'offline';
+      return '<tr class="'+cls+'"><td>'+d.mac+'</td><td>'+label+'</td>'+
+             '<td>'+(d.addr||'–')+'</td><td>'+d.last_seen+'</td>'+
+             '<td>'+d.idle_seconds+' s</td><td>'+d.buffered+'</td></tr>';
+    }).join('');
+    var u=document.getElementById('unregistered');
+    if(s.unregistered_connections&&s.unregistered_connections.length){
+      u.textContent='Verbindungen ohne Registrierung: '+
+        s.unregistered_connections.map(function(c){return c.addr;}).join(', ');
+    }else{u.textContent='';}
+  }catch(e){}
+}
+setInterval(refresh,1000);
+</script>"""
+    )
     parts.append("</body></html>")
     return "\n".join(parts)
 

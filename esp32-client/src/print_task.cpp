@@ -1,5 +1,5 @@
 // =============================================================================
-// print_task.cpp  –  "Print Task" (CPU 1, Priorität 2)
+// print_task.cpp  –  "Print Task" (Priorität 2)
 //
 // Nimmt Morse-Pakete aus der printQueue (vom PlaybackTask) und bereitet sie
 // für den Thermodrucker auf. Der Drucker druckt eine Zeile aus zwei
@@ -15,6 +15,8 @@
 #include <freertos/task.h>
 
 #include "app_state.h"
+#include "config.h"
+#include "network.h"
 #include "package.h"
 #include "printer.h"
 
@@ -24,6 +26,10 @@ void PrintTask(void* pvParameters) {
   static bool bottom_line[384] = { false }; // untere Punktreihe (384 Pixel)
   int index = 0;                            // Position in der aktuellen Reihe
   bool writing_top_line = true;             // zuerst in die obere Reihe schreiben
+
+  // Erstaufladung des Supercaps abwarten, bevor überhaupt gedruckt werden darf
+  // (~30 s nach dem Booten). Zwischen den Zeilen wartet print() dann nur noch 5 s.
+  vTaskDelay(pdMS_TO_TICKS(PRINT_BOOT_DELAY_MS));
 
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(100));  // kleine Pause (Polling vermeiden)
@@ -86,6 +92,11 @@ void PrintTask(void* pvParameters) {
     printerWriteByte('\n');
     printerFlush();
     vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Druck ist fertig -> jetzt erst das Zustell-ACK an den Server schicken.
+    // (Nur für Pakete, die vom Server kamen: status 1 = Nachricht, 3 = Check.)
+    if (package.status == 1 || package.status == 3)
+      queueDeliveryAck(package.msg_id);
   }
 }
 

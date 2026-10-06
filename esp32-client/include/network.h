@@ -50,4 +50,6 @@ void receivePackage();  // ein Paket vom Server empfangen -> playbackQueue
 void sendPackage();     // ein Paket aus sendQueue -> Server schicken
 void sendRegister();    // eigene MAC-Adresse registrieren (nach Verbindungsaufbau)
 void resendPendingSends(); // nach Reconnect: unbestätigte Sendungen erneut senden
+void queueDeliveryAck(uint64_t server_msg_id);  // ACK nach dem Druck vormerken
+void sendPendingAcks();                          // vorgemerkte ACKs senden (ConnectionTask)
 

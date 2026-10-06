@@ -1,5 +1,5 @@
 // =============================================================================
-// connection_task.cpp  –  "Check WiFi TCP" (läuft auf CPU 0, Priorität 1)
+// connection_task.cpp  –  "Check WiFi TCP" (Priorität 1)
 //
 // Das ist die Netzwerk-Zustandsmaschine des Geräts. Der Task arbeitet einen
 // Kreislauf aus vier Zuständen ab:
@@ -203,6 +203,8 @@ void ConnectionTask(void* pvParameters) {
           // Versuchen, wartende Pakete (von InputTask) zu senden.
           // sendPackage() prüft selbst, ob etwas in der sendQueue liegt.
           sendPackage();
+          // Vorgemerkte Zustell-ACKs (nach dem Druck) senden.
+          sendPendingAcks();
         } else {
           // Socket defekt -> aufräumen und neu verbinden.
           disconnectTCP();

@@ -1,5 +1,5 @@
 // =============================================================================
-// printer.cpp  –  Thermodrucker über UART2 (ESC/POS-Protokoll)
+// printer.cpp  –  Thermodrucker über UART1 (ESC/POS-Protokoll)
 //
 // Der Drucker wird mit rohen ESC/POS-Kommandos angesteuert:
 //   ESC @   -> Drucker zurücksetzen
@@ -18,7 +18,7 @@
 #include "config.h"
 
 static const char* TAG = "printer";
-static const uart_port_t PRINTER_UART = UART_NUM_2;  // UART2 für den Drucker
+static const uart_port_t PRINTER_UART = UART_NUM_1;  // UART1 für den Drucker (C5 hat nur UART0+UART1)
 
 static void writeByte(uint8_t byte) {
   uart_write_bytes(PRINTER_UART, &byte, 1);  // ein einzelnes Byte zum Drucker
@@ -41,7 +41,7 @@ void printerInit() {
   // Dem UART die GPIO-Pins zuweisen (TX=17, RX=16).
   ESP_ERROR_CHECK(uart_set_pin(PRINTER_UART, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-  ESP_LOGI(TAG, "UART2 initialisiert (TX=%d RX=%d)", TX_PIN, RX_PIN);
+  ESP_LOGI(TAG, "UART1 initialisiert (TX=%d RX=%d)", TX_PIN, RX_PIN);
 }
 
 void makePrinterReady() {
@@ -60,6 +60,10 @@ void makePrinterReady() {
 }
 
 void print(bool top_line[384], bool bottom_line[384]) {
+  // Vor jeder Zeile warten, damit der Supercap zwischen zwei Zeilen nachgeladen
+  // ist. Ohne das wäre der Abdruck zu blass.
+  vTaskDelay(pdMS_TO_TICKS(PRINT_LINE_DELAY_MS));
+
   // ESC * 1 nL nH : Grafikmodus "8-dot double density" starten.
   writeByte(27);
   writeByte('*');

@@ -8,7 +8,7 @@
 //   2. netif    – Netzwerk-Schnittstellen + Event-Loop (WLAN-Ereignisse)
 //   3. Treiber  – WLAN, Hardware (GPIO/LEDC), Drucker (UART)
 //   4. Queues   – Nachrichtenkanäle zwischen den Tasks
-//   5. Tasks    – je eine eigene Endlosschleife, auf die CPU-Kerne verteilt
+//   5. Tasks    – je eine eigene Endlosschleife, nebeneinander auf dem einzigen Kern
 //
 // Danach läuft alles nebenläufig über FreeRTOS-Tasks weiter.
 //
@@ -182,27 +182,28 @@ extern "C" void app_main(void) {
   sendQueue     = xQueueCreate(QUEUE_SIZE, sizeof(Package*));  // Eingabe -> Netz
   playbackQueue = xQueueCreate(QUEUE_SIZE, sizeof(Package*));  // Netz -> Wiedergabe
   printQueue    = xQueueCreate(QUEUE_SIZE, sizeof(Package*));  // Wiedergabe -> Druck
+  ackQueue      = xQueueCreate(QUEUE_SIZE, sizeof(uint64_t));  // Druck -> ACK (server_msg_id)
 
-  // Alle Tasks in einer Tabelle beschreiben: { Funktion, Name, Priorität, CPU-Kern }.
+  // Alle Tasks in einer Tabelle beschreiben: { Funktion, Name, Priorität }.
   // Priorität: höher = wichtiger (bekommt bei Konkurrenz zuerst CPU-Zeit).
   struct TaskDef {
     TaskFunction_t func;   // die Task-Funktion (Signatur: void(void*))
     const char* name;      // Name (nur für Debug-Ausgaben)
     int priority;          // Priorität (0..N, höher = wichtiger)
-    int core;              // CPU-Kern (0 oder 1)
   };
   constexpr int TASK_STACK_SIZE = 4096;  // Stack pro Task in Bytes
   const TaskDef tasks[] = {
-    { ConnectionTask, "Check WiFi TCP", 1, 0 },  // Netzwerk-Zustandsmaschine
-    { InputTask,      "Input Task",     1, 1 },  // Morse-Taste abtasten
-    { PlaybackTask,   "Output Task",    1, 1 },  // Ton + LED
-    { CheckerTask,    "Checker Task",   2, 1 },  // Drehschalter + Status-LED
-    { PrintTask,      "Print Task",     2, 1 },  // Thermodrucker
+    { ConnectionTask, "Check WiFi TCP", 1 },  // Netzwerk-Zustandsmaschine
+    { InputTask,      "Input Task",     1 },  // Morse-Taste abtasten
+    { PlaybackTask,   "Output Task",    1 },  // Ton + LED
+    { CheckerTask,    "Checker Task",   2 },  // Drehschalter + Status-LED
+    { PrintTask,      "Print Task",     2 },  // Thermodrucker
   };
 
-  // Jeden Task starten und fest an seinen CPU-Kern binden ("pinned").
+  // Der ESP32-C5 ist ein Single-Core-RISC-V: alle Tasks laufen auf dem
+  // einzigen Kern. Deshalb xTaskCreate() statt xTaskCreatePinnedToCore().
   for (const TaskDef& t : tasks)
-    xTaskCreatePinnedToCore(t.func, t.name, TASK_STACK_SIZE, NULL, t.priority, NULL, t.core);
+    xTaskCreate(t.func, t.name, TASK_STACK_SIZE, NULL, t.priority, NULL);
 }
 
 
