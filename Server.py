@@ -9,6 +9,7 @@ import html
 import json
 import re
 import subprocess
+import sys
 from datetime import datetime
 from enum import Enum
 from collections import OrderedDict, deque
@@ -282,6 +283,19 @@ def render_log_html():
     return "\n".join(parts)
 
 
+class MorseStatusHTTPServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer, das Verbindungsabbrüche ohne Traceback loggt."""
+
+    def handle_error(self, request, client_address):
+        exc_type, _, _ = sys.exc_info()
+        # Port-Scanner/Bots und abgebrochene Browser-Requests verursachen
+        # ConnectionReset/Abort/BrokenPipe – das ist harmloser Log-Spam.
+        if exc_type is not None and issubclass(exc_type, (ConnectionError, TimeoutError)):
+            log(f"HTTP-Client abgebrochen {client_address}: ({exc_type.__name__})", WARNING)
+        else:
+            super().handle_error(request, client_address)
+
+
 class StatusHandler(http.server.BaseHTTPRequestHandler):
     """Liefert Status (/status), Log (/log) und leitet / auf /status weiter."""
 
@@ -338,6 +352,9 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # Zugriffe landen im Server-Log (journal) statt auf stderr.
+        # Bots/Scanner probieren wilde Pfade aus -> 404er sind Log-Rauschen.
+        if len(args) >= 2 and str(args[1]) == "404":
+            return
         log("HTTP %s" % (fmt % args), INFO)
 
 
@@ -372,7 +389,7 @@ def main():
 
     # --- HTTP-Status-Endpoint (Live-Übersicht, Port 80) ---
     try:
-        httpd = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), StatusHandler)
+        httpd = MorseStatusHTTPServer(("0.0.0.0", HTTP_PORT), StatusHandler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         log(f"HTTP-Status-Endpoint auf 0.0.0.0:{HTTP_PORT} (/)", GOOD_INFO)
     except PermissionError:
@@ -434,7 +451,8 @@ class Clienthandler:
         self.send_thread.start()
 
     def receive_loop(self):
-        log_event("----", "CONNECT", note=f"addr={self.client_address}")
+        # CONNECT wird nicht für jede rohe Verbindung geloggt: Bots/Scanner
+        # hämmern auf Port 6969. Ein echtes Gerät meldet sich über REGISTER.
         reason = "stopped"
         while self.running:
             try:
@@ -614,7 +632,10 @@ class Clienthandler:
             entry["recent"].popitem(last=False)
 
     def _on_disconnect(self, reason="unknown"):
-        log_event("----", "DISCONNECT", mac=self.mac, note=f"addr={self.client_address} reason={reason}")
+        # Nur für registrierte Geräte loggen (Bots/Scanner -> mac ist None).
+        if self.mac is not None:
+            log_event("----", "DISCONNECT", mac=self.mac,
+                      note=f"addr={self.client_address} reason={reason}")
         try:
             self.client_socket.close()
         except OSError:
