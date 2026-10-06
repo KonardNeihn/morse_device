@@ -7,6 +7,8 @@ import time
 import http.server
 import html
 import json
+import base64
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +19,7 @@ from collections import OrderedDict, deque
 TCP_PORT = 6969
 HTTP_PORT = 80   # Status-Endpoint: http://morse-server.de/ (Port < 1024 -> braucht root/CAP_NET_BIND_SERVICE)
 JOURNAL_UNIT = "morse-server.service"   # systemd-Unit, deren Journal unter /log angezeigt wird
+STATE_FILE = "/var/lib/morse-server/state.json"   # persistenter Zustand (überlebt Neustarts)
 
 # Status-Codes (müssen zum esp32-client passen)
 STATUS_KEEPALIVE = 0   # Verbindung am Leben halten
@@ -85,6 +88,64 @@ def log(message, level=INFO):
 def fmt_mac(mac):
     """Formatiert 6 MAC-Bytes als 'aa:bb:cc:dd:ee:ff'."""
     return ":".join(f"{b:02x}" for b in mac)
+
+
+def save_state():
+    """Schreibt registry + msg-id-Zähler atomar in STATE_FILE (überlebt Neustarts)."""
+    try:
+        with registry_lock:
+            data = {
+                "next_server_msg_id": next_server_msg_id,
+                "devices": {
+                    mac.hex(): {
+                        "last_seen": entry["last_seen"],
+                        "buffer": [
+                            {"id": mid, "payload": base64.b64encode(payload).decode("ascii")}
+                            for mid, payload in entry["buffer"]
+                        ],
+                        "recent": [[cid, sid] for cid, sid in entry["recent"].items()],
+                    }
+                    for mac, entry in registry.items()
+                },
+            }
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, STATE_FILE)
+    except Exception as e:
+        log(f"State speichern fehlgeschlagen: ({type(e).__name__}) {e}", ERROR)
+
+
+def load_state():
+    """Lädt registry + msg-id-Zähler aus STATE_FILE (beim Start, vor den Threads)."""
+    global next_server_msg_id
+    try:
+        with open(STATE_FILE) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return  # erster Start / keine Datei
+    except Exception as e:
+        log(f"State laden fehlgeschlagen: ({type(e).__name__}) {e}", ERROR)
+        return
+
+    next_server_msg_id = int(data.get("next_server_msg_id", 0))
+    for mac_hex, d in data.get("devices", {}).items():
+        try:
+            mac = bytes.fromhex(mac_hex)
+        except ValueError:
+            continue
+        buffer = deque(
+            (int(item["id"]), base64.b64decode(item["payload"]))
+            for item in d.get("buffer", [])
+        )
+        recent = OrderedDict((int(cid), int(sid)) for cid, sid in d.get("recent", []))
+        registry[mac] = {
+            "handler": None,
+            "last_seen": float(d.get("last_seen", time.time())),
+            "buffer": buffer,
+            "recent": recent,
+        }
 
 
 def log_event(direction, event, mac=None, msg_id=None, length=None, note=""):
@@ -274,7 +335,7 @@ setInterval(refresh,1000);
 def render_log_html():
     """Baut die Log-Seite (alle Journal-Zeilen, neueste zuerst) für den Browser."""
     lines = _read_journal()
-    parts = [_page_head("Morse-Server Log", refresh=10)]
+    parts = [_page_head("Morse-Server Log")]
     parts.append("<h1>Morse-Server Log</h1>")
     parts.append(_nav("log"))
     parts.append(f"<p>{len(lines)} Zeilen (neueste zuerst)</p>")
@@ -355,6 +416,9 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         # Bots/Scanner probieren wilde Pfade aus -> 404er sind Log-Rauschen.
         if len(args) >= 2 and str(args[1]) == "404":
             return
+        # Das 1-s-Polling von /status.json (Live-Update) ist ebenfalls nur Rauschen.
+        if getattr(self, "path", "").split("?", 1)[0] == "/status.json":
+            return
         log("HTTP %s" % (fmt % args), INFO)
 
 
@@ -369,6 +433,7 @@ def reaper_loop():
                 if entry["handler"] is None and now - entry["last_seen"] > TTL_SECONDS:
                     del registry[mac]
                     log(f"Forgot offline MAC:    {fmt_mac(mac)}", WARNING)
+                    save_state()
 
 
 def main():
@@ -380,6 +445,8 @@ def main():
     server.bind(("0.0.0.0", TCP_PORT))
     server.listen()
     server.settimeout(1.0)      # wichtig für kontrolliertes Schließen
+
+    load_state()   # persistente Clients + Puffer + msg-id-Zähler wiederherstellen
 
     reaper = threading.Thread(target=reaper_loop, daemon=True)
     reaper.start()
@@ -425,6 +492,7 @@ def main():
         log(f"Error in main server: ({type(e).__name__}): {e}", ERROR)
 
     finally:
+        save_state()   # letzten Stand sichern
         running = False
         server.close()
         if httpd is not None:
@@ -537,6 +605,7 @@ class Clienthandler:
             log_event("SEND", "DELIVERY", mac=mac, msg_id=server_msg_id, length=len(pkt), note="buffered")
         if buffered:
             log(f"Flushed {len(buffered)} buffered to {fmt_mac(mac)}", INFO)
+        save_state()
 
     # --------------------------------------------------------------
     # ACK (Zustell-ACK eines Empfängers)
@@ -554,6 +623,7 @@ class Clienthandler:
                     item for item in entry["buffer"] if item[0] != msg_id
                 )
         log_event("RECV", "DELIVERY_ACK", mac=self.mac, msg_id=msg_id)
+        save_state()
 
     # --------------------------------------------------------------
     # Server-Check: zurücksenden statt broadcasten
@@ -586,6 +656,7 @@ class Clienthandler:
         self.send(HEADER.pack(STATUS_ACK, client_msg_id, 0))
         log_event("SEND", "CHECK_ECHO", mac=self.mac, msg_id=server_msg_id, length=len(payload))
         log_event("SEND", "ACCEPT_ACK", mac=self.mac, msg_id=client_msg_id)
+        save_state()
 
     # --------------------------------------------------------------
     # Normale Nachricht: broadcasten + für Offline-Clients puffern
@@ -625,6 +696,7 @@ class Clienthandler:
         self.send(HEADER.pack(STATUS_ACK, client_msg_id, 0))
         log_event("SEND", "BROADCAST", mac=self.mac, msg_id=server_msg_id, length=len(payload))
         log_event("SEND", "ACCEPT_ACK", mac=self.mac, msg_id=client_msg_id)
+        save_state()
 
     @staticmethod
     def _trim_recent(entry):
