@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime
 from enum import Enum
 from collections import OrderedDict, deque
@@ -36,23 +37,20 @@ HEADER = struct.Struct("!BQH")
 TTL_SECONDS = 7 * 24 * 3600   # so lange offline -> MAC + Puffer vergessen
 RECENT_MAX = 32               # gemerkte client_msg_id -> server_msg_id je Client
 
-# ANSI-Farbcodes
+# ANSI-Farbcodes – nur für die Terminal-Ausgabe (journald/Web färben selbst).
 COLORS = {
-    "INFO": "\033[0m",
-    "GOOD INFO": "\033[32m",
-    "WARNING": "\033[33m",
-    "ERROR": "\033[31m",
+    "INFO": "\033[0m",      # normal, keine Farbe
+    "WARNING": "\033[33m",  # gelb
+    "ERROR": "\033[31m",    # rot
     "RESET": "\033[0m",
 }
 
 class LogLevel(Enum):
     INFO = "INFO"
-    GOOD_INFO = "GOOD INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
 
 INFO = LogLevel.INFO
-GOOD_INFO = LogLevel.GOOD_INFO
 WARNING = LogLevel.WARNING
 ERROR = LogLevel.ERROR
 
@@ -78,11 +76,35 @@ def new_server_msg_id():
     return mid
 
 
-def log(message, level=INFO):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    color = COLORS.get(level.value, "")
-    reset = COLORS["RESET"]
-    print(f"{timestamp} {color}[{level.value:<9}]{reset} {message}")
+def log(message="", level=INFO, direction=None, event=None,
+        mac=None, msg_id=None, length=None):
+    """Eine konsistente Log-Zeile: Zeitstempel, Level, optionale Protokoll-Spalten.
+
+    Alle Ausgaben haben denselben Aufbau, damit Terminal, systemd-Journal und
+    die Online-/log-Seite identisch und greppbar sind. Protokoll-Events
+    (RECV/SEND) füllen die Spalten direction/event/mac/msg_id/length, reine
+    Statusmeldungen lassen sie leer (werden als '-' ausgegeben).
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    lvl = level.value if isinstance(level, LogLevel) else str(level)
+
+    dir_s = direction or "-"
+    ev_s = event or "-"
+    mac_s = fmt_mac(mac) if mac is not None else "-"
+    mid_s = str(msg_id) if msg_id is not None else "-"
+    len_s = str(length) if length is not None else "-"
+
+    # Farben nur im interaktiven Terminal. Im systemd-Journal wären die
+    # ANSI-Codes nur Müll – die Webseite färbt selbst per Level ein.
+    if sys.stdout.isatty():
+        color = COLORS.get(lvl, "")
+        reset = COLORS["RESET"]
+    else:
+        color = reset = ""
+
+    line = (f"{ts}  {color}{lvl:<9}{reset}  {dir_s:<4} {ev_s:<14} {mac_s:<17} "
+            f"{mid_s:<8} {len_s:<5} {message}")
+    print(line.rstrip())
 
 
 def fmt_mac(mac):
@@ -149,17 +171,15 @@ def load_state():
 
 
 def log_event(direction, event, mac=None, msg_id=None, length=None, note=""):
-    """Eine fest formatierte Tabellenzeile für einen Protokoll-Event."""
-    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    mac_s = fmt_mac(mac) if mac is not None else "-"
-    mid_s = str(msg_id) if msg_id is not None else "-"
-    len_s = str(length) if length is not None else "-"
-    print(f"{ts}  {direction:<4} {event:<14} {mac_s:<17} {mid_s:<20} {len_s:<5} {note}")
+    """Bildet einen Protokoll-Event auf die konsistente Log-Zeile ab.
 
-
-def log_table_header():
-    """Druckt die Spaltenüberschrift der Event-Tabelle (einmal beim Start)."""
-    print(f"{'TIME':<12}  {'DIR':<4} {'EVENT':<14} {'MAC':<17} {'MSG_ID':<20} {'LEN':<5} NOTE")
+    'event' == 'ERROR' wird auf Level ERROR gehoben (die Beschreibung steht
+    bereits in 'note'); alle übrigen Events laufen als INFO.
+    """
+    level = ERROR if event == "ERROR" else INFO
+    ev = None if event == "ERROR" else event
+    log(note, level=level, direction=direction, event=ev,
+        mac=mac, msg_id=msg_id, length=length)
 
 
 def build_status():
@@ -208,6 +228,10 @@ def build_status():
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Level-Spalte einer Log-Zeile erkennen: Zeitstempel (23 Zeichen) + 2 Leerzeichen,
+# danach ein 9 Zeichen breites Level-Feld (INFO/WARNING/ERROR linksbündig).
+LEVEL_RE = re.compile(r"^.{25}(INFO|WARNING|ERROR)\s")
+
 
 def strip_ansi(text):
     """Entfernt ANSI-Farbcodes aus einer Log-Zeile."""
@@ -233,6 +257,9 @@ def _page_head(title, refresh=None):
         ".offline{color:#888}"
         "pre{background:#000;padding:12px;border-radius:6px;font-size:12px;"
         "line-height:1.5;overflow-x:auto;white-space:pre-wrap;max-height:75vh;overflow-y:auto}"
+        ".lvl-info{color:#4c1}"
+        ".lvl-warning{color:#eb0;font-weight:bold}"
+        ".lvl-error{color:#f43;font-weight:bold}"
         "</style></head><body>"
     )
 
@@ -332,14 +359,36 @@ setInterval(refresh,1000);
     return "\n".join(parts)
 
 
-def render_log_html():
-    """Baut die Log-Seite (alle Journal-Zeilen, neueste zuerst) für den Browser."""
+def _colorize_line(line):
+    """Hebt die Level-Spalte per CSS-Klasse hervor (für die Online-/log-Seite)."""
+    m = LEVEL_RE.match(line)
+    if not m:
+        return html.escape(line)
+    lvl = m.group(1).lower()
+    return (html.escape(line[:25])
+            + f'<span class="lvl-{lvl}">{html.escape(line[25:34])}</span>'
+            + html.escape(line[34:]))
+
+
+def render_log_html(level_filter=None):
+    """Baut die Log-Seite (Journal-Zeilen, neueste zuerst, optional gefiltert)."""
     lines = _read_journal()
+    if level_filter:
+        lines = [l for l in lines
+                 if (m := LEVEL_RE.match(l)) and m.group(1) == level_filter]
+
+    filters = " · ".join(
+        (f"<b>{lvl}</b>" if lvl == level_filter else f"<a href='/log?level={lvl}'>{lvl}</a>")
+        for lvl in ("INFO", "WARNING", "ERROR")
+    )
     parts = [_page_head("Morse-Server Log")]
     parts.append("<h1>Morse-Server Log</h1>")
     parts.append(_nav("log"))
-    parts.append(f"<p>{len(lines)} Zeilen (neueste zuerst)</p>")
-    parts.append("<pre>" + "\n".join(html.escape(line) for line in lines) + "</pre>")
+    parts.append(
+        f"<p>Filter: <a href='/log'>Alle</a> · {filters} · "
+        f"{len(lines)} Zeilen (neueste zuerst)</p>"
+    )
+    parts.append("<pre>" + "\n".join(_colorize_line(line) for line in lines) + "</pre>")
     parts.append("</body></html>")
     return "\n".join(parts)
 
@@ -380,7 +429,9 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             return None, f"({type(e).__name__}): {e}"
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        qs = urllib.parse.parse_qs(parsed.query)
 
         # Startseite -> Status-Seite
         if path in ("/", "/index.html"):
@@ -406,7 +457,11 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/log":
-            self._respond(200, "text/html; charset=utf-8", render_log_html().encode("utf-8"))
+            level = qs.get("level", [None])[0]
+            if level not in ("INFO", "WARNING", "ERROR"):
+                level = None
+            self._respond(200, "text/html; charset=utf-8",
+                          render_log_html(level).encode("utf-8"))
             return
 
         self._respond(404, "text/plain; charset=utf-8", b"Not Found")
@@ -419,7 +474,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         # Das 1-s-Polling von /status.json (Live-Update) ist ebenfalls nur Rauschen.
         if getattr(self, "path", "").split("?", 1)[0] == "/status.json":
             return
-        log("HTTP %s" % (fmt % args), INFO)
+        log(fmt % args, INFO)
 
 
 def reaper_loop():
@@ -432,7 +487,7 @@ def reaper_loop():
                 entry = registry[mac]
                 if entry["handler"] is None and now - entry["last_seen"] > TTL_SECONDS:
                     del registry[mac]
-                    log(f"Forgot offline MAC:    {fmt_mac(mac)}", WARNING)
+                    log(f"Forgot offline MAC: {fmt_mac(mac)}", WARNING)
                     save_state()
 
 
@@ -451,14 +506,13 @@ def main():
     reaper = threading.Thread(target=reaper_loop, daemon=True)
     reaper.start()
 
-    log("Server startet...", GOOD_INFO)
-    log_table_header()
+    log("Server startet...", INFO)
 
     # --- HTTP-Status-Endpoint (Live-Übersicht, Port 80) ---
     try:
         httpd = MorseStatusHTTPServer(("0.0.0.0", HTTP_PORT), StatusHandler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        log(f"HTTP-Status-Endpoint auf 0.0.0.0:{HTTP_PORT} (/)", GOOD_INFO)
+        log(f"HTTP-Status-Endpoint auf 0.0.0.0:{HTTP_PORT} (/)", INFO)
     except PermissionError:
         log(f"HTTP-Status-Endpoint: Port {HTTP_PORT} braucht root oder CAP_NET_BIND_SERVICE", ERROR)
     except OSError as e:
