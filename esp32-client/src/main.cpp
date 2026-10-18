@@ -176,6 +176,7 @@ extern "C" void app_main(void) {
 
   // Version der ESP-IDF ausgeben (nur zu Info-Zwecken).
   ESP_LOGI(TAG, "ESP-IDF %s", esp_get_idf_version());
+  ESP_LOGI(TAG, "Firmware %s", FIRMWARE_VERSION);
 
   // Die drei Queues sind die Kommunikationskanäle zwischen den Tasks.
   // Durchgeschoben werden Zeiger auf Package-Objekte (der Inhalt liegt im Heap).

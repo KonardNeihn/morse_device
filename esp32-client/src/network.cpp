@@ -2,7 +2,7 @@
 // network.cpp  –  WLAN, DNS und TCP (niedrige Netzwerk-Ebene)
 //
 // Enthält die eigentlichen ESP-IDF-/lwIP-Aufrufe:
-//   - WLAN initialisieren und verbinden (inkl. IPv6-Adresse abwarten)
+//   - WLAN initialisieren und verbinden (inkl. IPv4-Adresse (DHCP) abwarten)
 //   - Hostname per DNS auflösen
 //   - TCP-Socket öffnen, verbinden, prüfen
 //   - Pakete senden/empfangen (Header + Payload)
@@ -20,7 +20,6 @@
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
-#include <nvs.h>
 
 #include <cstdio>
 #include <string.h>
@@ -89,46 +88,12 @@ static const char* socketErrText(int err) {
 }
 
 // -------------------------------------------------------------------------
-// client_msg_id: monotoner Zähler, der im NVS (Flash) überlebt. So gibt es
-// nach einem Reboot keine Kollision mit alten Einträgen des Servers.
+// client_msg_id: eindeutige ID für ausgehende Nachrichten. Zeitbasiert
+// (Mikrosekunden seit Systemstart, monoton steigend) – dadurch ist kein
+// Flash-Zugriff nötig und der NVS wird nicht pro Nachricht verschlissen.
 // -------------------------------------------------------------------------
-static constexpr const char* NVS_NAMESPACE = "morse";
-static constexpr const char* NVS_KEY_MSG_ID = "client_msg_id";
-
-static uint64_t loadClientMsgId() {
-  nvs_handle_t handle;
-  uint64_t last = 0;
-  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
-    size_t len = sizeof(last);
-    nvs_get_blob(handle, NVS_KEY_MSG_ID, &last, &len);
-    nvs_close(handle);
-  }
-  return last;
-}
-
-static void saveClientMsgId(uint64_t last) {
-  nvs_handle_t handle;
-  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
-    nvs_set_blob(handle, NVS_KEY_MSG_ID, &last, sizeof(last));
-    nvs_commit(handle);
-    nvs_close(handle);
-  }
-}
-
-// Eindeutige client_msg_id: monotoner Zähler, der im NVS überlebt.
 static uint64_t newClientMsgId() {
-  static uint64_t last_used = 0;
-  static bool loaded = false;
-
-  if (!loaded) {
-    last_used = loadClientMsgId();  // 0, wenn noch nichts gespeichert ist
-    loaded = true;
-  }
-
-  uint64_t id = last_used + 1;
-  last_used = id;
-  saveClientMsgId(last_used);
-  return id;
+  return (uint64_t)esp_timer_get_time();
 }
 
 // Liest die eigene MAC-Adresse (einmal beim Start, in wifiInit aufgerufen).
@@ -559,11 +524,11 @@ bool connectTCP(int retry_counter) {
   // setsockopt() setzt eine Socket-Option (hier: Keepalive einschalten).
   int yes = 1;
   setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
-  int idle = 10;                                       // nach 10 s Inaktivität prüfen
+  int idle = TCP_KEEPALIVE_IDLE_S;  // Zeit bis zur 1. Keepalive-Probe (s)
   setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
-  int interval = 5;                                    // alle 5 s erneut prüfen
+  int interval = TCP_KEEPALIVE_INTERVAL_S;  // Abstand zwischen den Proben (s)
   setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
-  int count = 3;                                       // nach 3 Fehlversuchen aufgeben
+  int count = TCP_KEEPALIVE_COUNT;  // erfolglose Proben bis "tot"
   setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 
   // --- Sende-/Empfangs-Timeout: recv/send blockieren max. SOCKET_IO_TIMEOUT_S. ---
@@ -578,6 +543,11 @@ bool connectTCP(int retry_counter) {
 }
 
 bool checkSocket(bool& readable) {
+  if (sock < 0) {
+    ESP_LOGW(TAG, "socket disconnected returning to DNS_RESOLVE");
+    return false;
+  }
+
   // 1) Socket-Fehlerstatus abfragen (z. B. "Connection reset by peer").
   int err;
   socklen_t len = sizeof(err);
@@ -585,11 +555,6 @@ bool checkSocket(bool& readable) {
 
   if (err) {
     ESP_LOGE(TAG, "Socket error: %s (%d)", strerror(err), err);
-    return false;
-  }
-
-  if (sock < 0) {
-    ESP_LOGW(TAG, "socket disconnected returning to DNS_RESOLVE");
     return false;
   }
 

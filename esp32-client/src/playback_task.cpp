@@ -41,6 +41,8 @@ void PlaybackTask(void* pvParameters) {
     if (!getPackageFromQueue(playbackQueue, package))
       continue;
 
+    isPlaying = true;  // Status-LED-Blinken während der Wiedergabe unterdrücken
+
     // Paket Byte für Byte und Bit für Bit abarbeiten.
     bool interrupted = false;  // true, sobald der Nutzer selbst zu morsen beginnt
     for (uint8_t signal : package.payload) {
@@ -68,6 +70,8 @@ void PlaybackTask(void* pvParameters) {
       }
       if (interrupted) break;
     }
+    isPlaying = false;  // Wiedergabe beendet (auch bei Abbruch)
+
     // Nach dem letzten Bit sicherstellen, dass Ton und LED aus sind.
     stopTone();
     gpio_set_level((gpio_num_t)LED, 0);

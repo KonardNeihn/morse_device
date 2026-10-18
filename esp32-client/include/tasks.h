@@ -5,7 +5,7 @@
 //
 // Jeder Task ist eine Funktion mit der Signatur `void(void*)` und läuft als
 // eigene Endlosschleife. Die Implementierungen liegen in den gleichnamigen
-// .cpp-Dateien. Gestartet werden sie in main.cpp mit xTaskCreatePinnedToCore().
+// .cpp-Dateien. Gestartet werden sie in main.cpp mit xTaskCreate().
 // =============================================================================
 
 void ConnectionTask(void* pvParameters);  // Netzwerk-Zustandsmaschine

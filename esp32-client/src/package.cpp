@@ -40,7 +40,7 @@ bool getPackageFromQueue(QueueHandle_t queue, Package& package) {
 // Paket als 0/1-String ausgeben (für Log-Ausgaben, z. B. "11110000...").
 std::string packageToText(const Package& package) {
   std::string text = "";
-  for (int i = 0; i < package.size; i++) {
+  for (size_t i = 0; i < package.payload.size(); i++) {
     uint8_t mask = 0b10000000;  // mit dem höchstwertigen Bit (MSB) beginnen
     for (int j = 0; j < 8; j++) {
       if (package.payload[i] & mask)

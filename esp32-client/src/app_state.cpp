@@ -29,5 +29,6 @@ QueueHandle_t printQueue;
 int sock = -1;  // -1 = noch kein TCP-Socket offen
 
 volatile bool isRecording = false;  // keine Aufnahme aktiv
+volatile bool isPlaying = false;    // keine Wiedergabe aktiv
 QueueHandle_t ackQueue;             // wird in main.cpp angelegt
 

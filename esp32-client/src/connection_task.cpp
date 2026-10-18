@@ -128,9 +128,6 @@ void ConnectionTask(void* pvParameters) {
           break;
         }
 
-        // Beide Netze nicht erreichbar -> Neustart (hilft bei WLAN oft).
-        //ESP_LOGW(TAG, "Restarting...");
-        //esp_restart();  // ESP32 komplett neu starten (wie Reset-Knopf)
         break;
 
       case DNS_RESOLVE:

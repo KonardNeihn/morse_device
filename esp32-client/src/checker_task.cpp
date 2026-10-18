@@ -32,7 +32,7 @@ void CheckerTask(void* pvParameters) {
     //   < -80 dBm          kritisch
 
     // Im Selbsttest-Modus oder während der Nutzer morst keine Status-LED.
-    if (SELF_CHECK_MODE || isRecording)
+    if (SELF_CHECK_MODE || isRecording || isPlaying)
       continue;
 
     // Je nach Netzwerk-Zustand ein anderes Blinkmuster zeigen.

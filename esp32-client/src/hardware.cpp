@@ -103,7 +103,7 @@ static void blink(int delay_ms) {
 }
 
 // Status-LED: `blinks`-mal kurz aufleuchten lassen. Die Anzahl entspricht dem
-// Verbindungszustand (1x = WLAN suchen, 2x = IP6 warten, 3x = DNS, 4x = TCP).
+// Verbindungszustand (1x = WLAN suchen, 3x = DNS, 4x = TCP).
 void showStatus(int blinks) {
   for (int i = 0; i < blinks; i++)
     blink(200);

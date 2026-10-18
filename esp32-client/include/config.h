@@ -8,6 +8,9 @@
 // diese Datei anfassen.
 // =============================================================================
 
+// ------------------------- Firmware-Version -----------------------------
+#define FIRMWARE_VERSION "1.0.0"
+
 // ------------------------- Hotspot (Konfigurations-AP) -----------------
 // Offener Access Point, über den man per Handy-Browser die WLANs einstellt.
 // Die WLAN-Zugangsdaten selbst werden persistent im NVS gespeichert
@@ -24,8 +27,9 @@ constexpr int port = 6969;                                   // Port des Servers
 // Alle Zeiten in Millisekunden, sofern nicht anders angegeben.
 #define SAMPLING_RATE_MS 10       // eine Abtastung der Taste alle x ms
 #define RECORDING_TIMEOUT_MS 5000 // nach so langer Pause gilt die Morse-Eingabe als fertig
-#define TCP_TIMEOUT 30000         // Timeout für TCP-Operationen
-#define KEEP_ALIVE_INTERVAL_MS 5000
+#define TCP_KEEPALIVE_IDLE_S     10  // Sekunden Inaktivität bis zur 1. Keepalive-Probe
+#define TCP_KEEPALIVE_INTERVAL_S  5  // Abstand zwischen den Keepalive-Proben
+#define TCP_KEEPALIVE_COUNT       3  // erfolglose Proben, bis die Verbindung als tot gilt
 #define MAX_CONNECT_RETRIES 3     // max. DNS-/TCP-Versuche, bevor ein Zustand zurückfällt
 #define QUEUE_SIZE 10             // Pufferplätze der Nachrichten-Queues
 #define SOUND_FREQ 200            // Tonhöhe des Lautsprechers in Hz

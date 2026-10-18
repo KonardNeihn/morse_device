@@ -3,7 +3,7 @@
 // =============================================================================
 // app_state.h  –  geteilter Zustand zwischen den Tasks
 //
-// Die Tasks laufen parallel (auf zwei CPU-Kernen). Damit sie miteinander
+// Die Tasks laufen parallel auf dem einzigen Kern (Single-Core-RISC-V). Damit
 // reden können, teilen sie sich diese globalen Variablen. Vorsicht: Gemeinsame
 // Daten brauchen Schutz – deshalb sind die Modus-Flags `volatile` und die
 // Nachrichten laufen über Queues (die FreeRTOS-threadsicher sind).
@@ -57,6 +57,10 @@ extern int sock;
 // true, solange der InputTask gerade eine Morse-Eingabe aufzeichnet. Dann
 // spielt der PlaybackTask keine Pakete ab und die LED spiegelt die Taste.
 extern volatile bool isRecording;
+
+// true, solange der PlaybackTask gerade ein Paket abspielt. Der CheckerTask
+// darf dann die Status-LED nicht blinken (die LED gehört dem PlaybackTask).
+extern volatile bool isPlaying;
 
 // Queue für Zustell-ACKs, die erst NACH dem Drucken gesendet werden dürfen.
 // Der PrintTask legt die server_msg_ids hier ab, der ConnectionTask sendet sie.

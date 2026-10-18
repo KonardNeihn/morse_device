@@ -244,17 +244,15 @@ static std::string buildHtmlPage() {
   htmlEscape(getSsid1(), h);
   h += "\" autocomplete=\"off\">\n";
 
-  h += "<label>WLAN 1 (Passwort)</label>\n<input name=\"pw1\" type=\"text\" value=\"";
-  htmlEscape(getPassword1(), h);
-  h += "\" autocomplete=\"off\">\n";
+  h += "<label>WLAN 1 (Passwort)</label>\n<input name=\"pw1\" type=\"password\" placeholder=\"leer lassen = behalten\" autocomplete=\"new-password\">\n";
+  h += "<label><input type=\"checkbox\" name=\"pw1_clear\" style=\"width:auto\"> Offenes Netzwerk (kein Passwort)</label>\n";
 
   h += "<label>WLAN 2 (Name, optional)</label>\n<input name=\"ssid2\" value=\"";
   htmlEscape(getSsid2(), h);
   h += "\" autocomplete=\"off\">\n";
 
-  h += "<label>WLAN 2 (Passwort, optional)</label>\n<input name=\"pw2\" type=\"text\" value=\"";
-  htmlEscape(getPassword2(), h);
-  h += "\" autocomplete=\"off\">\n";
+  h += "<label>WLAN 2 (Passwort, optional)</label>\n<input name=\"pw2\" type=\"password\" placeholder=\"leer lassen = behalten\" autocomplete=\"new-password\">\n";
+  h += "<label><input type=\"checkbox\" name=\"pw2_clear\" style=\"width:auto\"> Offenes Netzwerk (kein Passwort)</label>\n";
 
   h += "<button type=\"submit\">Speichern &amp; verbinden</button>\n";
   h += "</form>\n";
@@ -338,7 +336,8 @@ static esp_err_t statusHandler(httpd_req_t* req) {
 // Redirects folgt oder nicht.
 
 static void parseForm(const char* body, std::string& s1, std::string& p1,
-                      std::string& s2, std::string& p2) {
+                      std::string& s2, std::string& p2,
+                      bool& clearPw1, bool& clearPw2) {
   const char* p = body;
   while (p != nullptr && *p != '\0') {
     const char* amp = strchr(p, '&');
@@ -354,6 +353,8 @@ static void parseForm(const char* body, std::string& s1, std::string& p1,
     else if (key == "pw1") p1 = val;
     else if (key == "ssid2") s2 = val;
     else if (key == "pw2") p2 = val;
+    else if (key == "pw1_clear") clearPw1 = true;
+    else if (key == "pw2_clear") clearPw2 = true;
 
     if (amp == nullptr)
       break;
@@ -373,7 +374,12 @@ static esp_err_t saveHandler(httpd_req_t* req) {
   body[total] = '\0';
 
   std::string s1, p1, s2, p2;
-  parseForm(body, s1, p1, s2, p2);
+  bool clearPw1 = false, clearPw2 = false;
+  parseForm(body, s1, p1, s2, p2, clearPw1, clearPw2);
+
+  // Leeres Passwort + kein "offenes Netz"-Häkchen -> bestehendes behalten.
+  if (!clearPw1 && p1.empty()) p1 = getPassword1();
+  if (!clearPw2 && p2.empty()) p2 = getPassword2();
 
   if (saveWifiConfig(s1.c_str(), p1.c_str(), s2.c_str(), p2.c_str())) {
     wifiReconnectRequested = true;  // ConnectionTask verbindet mit den neuen Daten

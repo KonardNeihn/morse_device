@@ -11,7 +11,7 @@
 void hardwareInit();
 
 // Status-LED: `blinks`-mal kurz aufleuchten lassen. Die Anzahl entspricht dem
-// Verbindungszustand (1x = WLAN suchen, 2x = IP6 warten, 3x = DNS, 4x = TCP, 5x = bad Signal).
+// Verbindungszustand (1x = WLAN suchen, 3x = DNS, 4x = TCP, 5x = bad Signal).
 void showStatus(int blinks);
 
 // Ton an/aus (nur wenn der Drehschalter "ohne Ton" NICHT aktiv ist).

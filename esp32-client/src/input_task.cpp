@@ -13,7 +13,6 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -36,16 +35,10 @@ void InputTask(void* pvParameters) {
   uint32_t last_pressed = nowMs() - RECORDING_TIMEOUT_MS;
 
   while (true) {
-    // Nichts tun, solange weder Netzwerk läuft noch der Selbsttest aktiv ist.
-    // (Sonst würden Tastendrücke ins Leere laufen.)
-    /*if (state != RUNNING && SELF_CHECK_MODE == false) {
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }*/
 
     // Kein Tastendruck -> kurz schlafen und weiter pollen.
     // WICHTIG: Ohne diese Pause wäre dies eine Busy-Loop, die den IDLE-Task
-    // auf CPU 1 aushungert und damit den Task-Watchdog auslöst.
+    // aushungert und damit den Task-Watchdog auslöst.
     if (gpio_get_level((gpio_num_t)BUTTON) != 0) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -56,17 +49,8 @@ void InputTask(void* pvParameters) {
       last_pressed = nowMs();
       isRecording = true;  // PlaybackTask soll während der Aufnahme nichts abspielen
 
-      // Fortschritt: ein Punkt pro Aufnahme-Frame (1 Byte) auf EINER Zeile.
-      // So sieht man, wann die Aufnahme startet und wie lange sie läuft –
-      // ohne das Log mit "Time until send"-Zeilen zu fluten.
-      printf("record: ");
-      fflush(stdout);
-
       // Aufnehmen, bis RECORDING_TIMEOUT_MS lang nichts mehr gedrückt wurde.
       while (nowMs() - last_pressed < RECORDING_TIMEOUT_MS) {
-        printf(".");
-        fflush(stdout);
-
         // Einen "Frame" = 8 Abtastungen = 1 Byte aufnehmen.
         uint8_t signal = 0;
         for (int j = 0; j < 8; j++) {
@@ -82,9 +66,6 @@ void InputTask(void* pvParameters) {
         }
         package.payload.push_back(signal);  // fertiges Byte anhängen
       }
-      printf("\n");
-      fflush(stdout);
-
       isRecording = false;                        // Aufnahme beendet
       gpio_set_level((gpio_num_t)LED, 0);         // LED aus
 
