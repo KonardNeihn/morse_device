@@ -112,6 +112,21 @@ def fmt_mac(mac):
     return ":".join(f"{b:02x}" for b in mac)
 
 
+def fmt_duration(seconds):
+    """Formatiert Sekunden als kompakte, lesbare Dauer (s/min/h/d)."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} min {sec} s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} h {minutes} min"
+    days, hours = divmod(hours, 24)
+    return f"{days} d {hours} h"
+
+
 def save_state():
     """Schreibt registry + msg-id-Zähler atomar in STATE_FILE (überlebt Neustarts)."""
     try:
@@ -210,7 +225,7 @@ def build_status():
                 "online": online,
                 "addr": addr,
                 "last_seen": datetime.fromtimestamp(entry["last_seen"]).strftime("%Y-%m-%d %H:%M:%S"),
-                "idle_seconds": int(now - entry["last_seen"]),
+                "idle": fmt_duration(now - entry["last_seen"]),
                 "buffered": len(entry["buffer"]),
             })
 
@@ -297,7 +312,7 @@ def _device_rows_html(devices):
         rows.append(
             f"<tr class=\"{cls}\"><td>{d['mac']}</td><td>{label}</td>"
             f"<td>{d['addr'] or '–'}</td><td>{d['last_seen']}</td>"
-            f"<td>{d['idle_seconds']} s</td><td>{d['buffered']}</td></tr>"
+            f"<td>{d['idle']}</td><td>{d['buffered']}</td></tr>"
         )
     return "\n".join(rows)
 
@@ -343,7 +358,7 @@ async function refresh(){
       var label=d.online?'online':'offline';
       return '<tr class="'+cls+'"><td>'+d.mac+'</td><td>'+label+'</td>'+
              '<td>'+(d.addr||'–')+'</td><td>'+d.last_seen+'</td>'+
-             '<td>'+d.idle_seconds+' s</td><td>'+d.buffered+'</td></tr>';
+             '<td>'+d.idle+'</td><td>'+d.buffered+'</td></tr>';
     }).join('');
     var u=document.getElementById('unregistered');
     if(s.unregistered_connections&&s.unregistered_connections.length){
@@ -604,6 +619,9 @@ class Clienthandler:
         if status == STATUS_KEEPALIVE:
             log_event("RECV", "KEEPALIVE", mac=self.mac, note=f"addr={self.client_address}")
             self.send(HEADER.pack(STATUS_KEEPALIVE, 0, 0))
+            # Keepalive-Austausch (Empfang + Antwort) zählt als "Kontakt",
+            # damit "Idle" nicht nur von Nachrichten abhängt.
+            self._touch_last_seen()
             return
         if status == STATUS_REGISTER:
             self._handle_register(payload)
@@ -618,6 +636,15 @@ class Clienthandler:
             self._handle_message(msg_id, payload)
             return
         log_event("----", "ERROR", mac=self.mac, note=f"unknown status={status}")
+
+    def _touch_last_seen(self):
+        """'Letzter Kontakt' auf jetzt setzen (z. B. bei Keepalive)."""
+        if self.mac is None:
+            return
+        with registry_lock:
+            entry = registry.get(self.mac)
+            if entry is not None:
+                entry["last_seen"] = time.time()
 
     # --------------------------------------------------------------
     # Registrierung
