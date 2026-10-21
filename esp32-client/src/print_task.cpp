@@ -42,8 +42,13 @@ void PrintTask(void* pvParameters) {
     getPackageFromQueue(printQueue, package);
 
     // Im "ohne Drucker"-Modus das Paket verwerfen.
-    if (NO_PRINTER_MODE == true)
+    if (NO_PRINTER_MODE == true) {
+      // kein Druck -> Zustell-ACK an den Server schicken.
+      // (Nur für Pakete, die vom Server kamen: status 1 = Nachricht, 3 = Check.)
+      if (package.status == 1 || package.status == 3)
+        queueDeliveryAck(package.msg_id);
       continue;
+    }
 
     makePrinterReady();  // Drucker zurücksetzen + Heizparameter
 

@@ -16,6 +16,7 @@ esp32-client/include/config.h). Ton + Lampe folgen dem Signal beim Senden
 und bei der Wiedergabe. Keine externen Python-Pakete nötig.
 """
 
+import array
 import io
 import math
 import os
@@ -40,9 +41,13 @@ DEFAULT_PORT = 6969
 
 SAMPLING_RATE_MS = 10        # eine Abtastung der "Taste" alle x ms
 RECORDING_TIMEOUT_MS = 5000  # nach so langer Pause gilt die Eingabe als fertig
-KEEPALIVE_INTERVAL_S = 10    # Abstand der Keepalive-Pakete
+KEEPALIVE_INTERVAL_S = 10    # Abstand der App-Keepalive-Pakete
+CONNECTION_TIMEOUT_S = 30    # Fallback-Timeout, falls TCP-Keepalive nicht greift
+TCP_KEEPALIVE_IDLE_S = 10    # TCP-Keepalive: Ruhe vor der 1. Probe (wie ESP32)
+TCP_KEEPALIVE_INTERVAL_S = 5 # TCP-Keepalive: Abstand der Proben
+TCP_KEEPALIVE_COUNT = 3      # TCP-Keepalive: fehlgeschlagene Proben bis "tot"
 RECONNECT_DELAY_S = 3        # Wartezeit nach Verbindungsverlust
-SOUND_FREQ = 200             # Tonhöhe in Hz (wie SOUND_FREQ am ESP32)
+SOUND_FREQ = 700             # Morse-Sidetone in Hz (üblich: 600–1000 Hz)
 
 STATUS_KEEPALIVE = 0
 STATUS_MESSAGE = 1
@@ -70,41 +75,13 @@ def _preview(text, limit=96):
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-def printer_lines(payload):
-    """Payload in Druckzeilen zerlegen – exakt wie print_task.cpp.
-
-    Jede Zeile besteht aus einer oberen (384 Punkte) und einer unteren Reihe
-    (384 Punkte); Bit gesetzt = Punkt, Bit klar = leer.
-    """
+def _bits_of(payload):
+    """Payload als Liste von Bits (MSB zuerst, je Byte)."""
     bits = []
     for b in payload:
         for i in range(7, -1, -1):
             bits.append((b >> i) & 1)
-
-    lines = []
-    top = [False] * 384
-    bottom = [False] * 384
-    idx = 0
-    writing_top = True
-    for bit in bits:
-        if writing_top:
-            top[idx] = bool(bit)
-        else:
-            bottom[idx] = bool(bit)
-        idx += 1
-        if idx == 384:
-            if writing_top:
-                writing_top = False
-                idx = 0
-            else:
-                lines.append((top, bottom))
-                top = [False] * 384
-                bottom = [False] * 384
-                writing_top = True
-                idx = 0
-    if idx != 0:
-        lines.append((top, bottom))
-    return lines
+    return bits
 
 
 class MorseSampler:
@@ -151,21 +128,50 @@ class MorseSampler:
             return payload or None
         return None
 
+    def current_bits(self):
+        """Alle bisherigen Abtastungen der laufenden Aufnahme als Bit-Liste."""
+        bits = []
+        for b in self.current_bytes:
+            for i in range(7, -1, -1):
+                bits.append((b >> i) & 1)
+        bits.extend(self.sample_buffer)
+        return bits
+
 
 # ---------------------------------------------------------------------------
-# Ton: WAV selbst erzeugen und über paplay/pw-play/aplay abspielen
+# Ton: bevorzugt pygame (niedrige Latenz), sonst paplay/pw-play/aplay
 # ---------------------------------------------------------------------------
 class SoundEngine:
-    """Morse-Töne (SOUND_FREQ) ohne externe Python-Pakete erzeugen/abspielen."""
+    """Morse-Töne (SOUND_FREQ) erzeugen und abspielen.
+
+    Bevorzugt pygame.mixer (niedrige Latenz -> Sidetone auch bei sehr kurzen
+    Signalen). Ohne pygame fällt es auf paplay/pw-play/aplay zurück (höhere
+    Latenz durch Prozessstart).
+    """
 
     def __init__(self, freq=SOUND_FREQ, bit_ms=SAMPLING_RATE_MS):
         self.freq = freq
         self.bit_ms = bit_ms
-        self.rate = 8000
-        self._player = None
+        self.rate = 22050
+        self._pg = self._init_pygame()
+        self._cmd = None if self._pg is not None else self._detect_player()
+        self._player = None            # subprocess (Fallback)
         self._tone_file = None
         self._last_play_file = None
-        self._cmd = self._detect_player()
+        self._tone = None              # pygame Sound (Dauerton)
+        self._tone_channel = None
+        self._msg_sound = None
+        self._msg_channel = None
+
+    def _init_pygame(self):
+        try:
+            import pygame
+            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=256)
+            # Smoke-Test, damit wir sicher wissen, dass das Backend funktioniert
+            pygame.mixer.Sound(buffer=array.array("h", [0] * 64))
+            return pygame
+        except Exception:
+            return None
 
     def _detect_player(self):
         for name in ("paplay", "pw-play", "aplay"):
@@ -176,35 +182,36 @@ class SoundEngine:
 
     @property
     def available(self):
-        return self._cmd is not None
+        return self._pg is not None or self._cmd is not None
 
-    # -- WAV-Erzeugung ------------------------------------------------------
-    def _wrap_wav(self, frames):
-        buf = io.BytesIO()
-        w = wave.open(buf, "wb")
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(self.rate)
-        w.writeframes(frames)
-        w.close()
-        return buf.getvalue()
-
+    # -- Samples erzeugen -----------------------------------------------------
     def _render(self, on_flags):
-        frames = bytearray()
+        out = array.array("h")
         t = 0
         for on in on_flags:
             if on:
                 v = int(0.6 * 32767 * math.sin(2 * math.pi * self.freq * t / self.rate))
             else:
                 v = 0
-            frames += struct.pack("<h", v)
+            out.append(v)
             t += 1
-        return self._wrap_wav(bytes(frames))
+        return out
 
-    def _continuous_tone(self, seconds=10):
-        return self._render([True] * int(self.rate * seconds))
+    def _wrap_wav(self, samples):
+        buf = io.BytesIO()
+        w = wave.open(buf, "wb")
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(self.rate)
+        w.writeframes(samples.tobytes())
+        w.close()
+        return buf.getvalue()
 
-    def _message_wav(self, payload):
+    def _tone_samples(self):
+        # 1 s Dauerton (ganzzahlig viele Perioden -> nahtlose Endlos-Schleife)
+        return self._render([True] * self.rate)
+
+    def _message_samples(self, payload):
         per_bit = max(1, int(round(self.rate * self.bit_ms / 1000.0)))
         flags = []
         for b in payload:
@@ -212,9 +219,59 @@ class SoundEngine:
                 flags += [bool((b >> i) & 1)] * per_bit
         return self._render(flags)
 
-    # -- Abspielen ----------------------------------------------------------
+    # -- Steuerung ------------------------------------------------------------
+    def start_tone(self):
+        if self._pg is not None:
+            if self._tone is None:
+                self._tone = self._pg.mixer.Sound(buffer=self._tone_samples())
+            if self._tone_channel is not None:
+                self._tone_channel.stop()
+            self._tone_channel = self._tone.play(loops=-1)
+        elif self._cmd is not None:
+            if self._tone_file is None:
+                fd, path = tempfile.mkstemp(suffix=".wav")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(self._wrap_wav(self._render([True] * (self.rate * 10))))
+                self._tone_file = path
+            self._launch(self._tone_file)
+
+    def stop_tone(self):
+        if self._pg is not None:
+            if self._tone_channel is not None:
+                self._tone_channel.stop()
+                self._tone_channel = None
+        elif self._player is not None:
+            try:
+                self._player.terminate()
+            except OSError:
+                pass
+            self._player = None
+
+    def play_bits(self, payload):
+        if self._pg is not None:
+            self.stop()
+            self._msg_sound = self._pg.mixer.Sound(buffer=self._message_samples(payload))
+            self._msg_channel = self._msg_sound.play()
+        elif self._cmd is not None:
+            self._cleanup_play_file()
+            fd, path = tempfile.mkstemp(suffix=".wav")
+            with os.fdopen(fd, "wb") as f:
+                f.write(self._wrap_wav(self._message_samples(payload)))
+            self._last_play_file = path
+            self._launch(path)
+
+    def stop(self):
+        if self._pg is not None:
+            self.stop_tone()
+            if self._msg_channel is not None:
+                self._msg_channel.stop()
+                self._msg_channel = None
+        else:
+            self.stop_tone()
+
+    # -- Fallback (Subprozess) -------------------------------------------------
     def _launch(self, wav_path):
-        self.stop()
+        self.stop_tone()
         if self._cmd is None:
             return
         name, path = self._cmd
@@ -225,38 +282,6 @@ class SoundEngine:
         except OSError:
             self._player = None
 
-    def _ensure_tone_file(self):
-        if self._tone_file is not None:
-            return
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        with os.fdopen(fd, "wb") as f:
-            f.write(self._continuous_tone())
-        self._tone_file = path
-
-    def start_tone(self):
-        if self._cmd is None:
-            return
-        self._ensure_tone_file()
-        self._launch(self._tone_file)
-
-    def stop_tone(self):
-        if self._player is not None:
-            try:
-                self._player.terminate()
-            except OSError:
-                pass
-            self._player = None
-
-    def play_bits(self, payload):
-        if self._cmd is None:
-            return
-        self._cleanup_play_file()
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        with os.fdopen(fd, "wb") as f:
-            f.write(self._message_wav(payload))
-        self._last_play_file = path
-        self._launch(path)
-
     def _cleanup_play_file(self):
         if self._last_play_file is not None:
             try:
@@ -264,9 +289,6 @@ class SoundEngine:
             except OSError:
                 pass
             self._last_play_file = None
-
-    def stop(self):
-        self.stop_tone()
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +324,9 @@ class MorseNet:
         self._host = DEFAULT_HOST
         self._port = DEFAULT_PORT
         self._wake = threading.Event()
+        self._last_recv = time.monotonic()   # letzter Empfang (Tot-Erkennung)
+        self._pending_sends = {}             # client_msg_id -> payload (noch nicht bestätigt)
+        self._pending_lock = threading.Lock()
 
     def set_target(self, host, port):
         with self._target_lock:
@@ -354,6 +379,8 @@ class MorseNet:
             self._next_msg_id += 1
             mid = self._next_msg_id
         self.send_queue.put(HEADER.pack(STATUS_MESSAGE, mid, len(payload)) + payload)
+        with self._pending_lock:
+            self._pending_sends[mid] = payload
         self.events.put(("sent", mid, payload))
 
     # -- intern -------------------------------------------------------------
@@ -377,6 +404,12 @@ class MorseNet:
         except OSError:
             pass
 
+    def _requeue_pending(self):
+        """Noch nicht bestätigte Nachrichten nach einem Reconnect erneut senden."""
+        with self._pending_lock:
+            for mid, payload in self._pending_sends.items():
+                self.send_queue.put(HEADER.pack(STATUS_MESSAGE, mid, len(payload)) + payload)
+
 
     def _network_loop(self):
         while self.running:
@@ -399,7 +432,9 @@ class MorseNet:
                 continue
 
             self._drain_queue()
+            self._requeue_pending()
             self._recv_buffer = b""
+            self._last_recv = time.monotonic()
             self._emit("status", "Verbunden – bereit zum Morsen")
             self._serve(sock)
 
@@ -411,12 +446,33 @@ class MorseNet:
 
     def _connect(self, host, port):
         try:
-            return socket.create_connection((host, port), timeout=10)
+            sock = socket.create_connection((host, port), timeout=10)
         except OSError as e:
             self._emit("error", "Verbindung fehlgeschlagen: %s" % e)
             self._emit("status", "Verbindung fehlgeschlagen")
             self._sleep(RECONNECT_DELAY_S)
             return None
+        self._enable_tcp_keepalive(sock)
+        return sock
+
+    def _enable_tcp_keepalive(self, sock):
+        """TCP-Keepalive aktivieren, damit das OS tote Verbindungen selbst erkennt.
+
+        Werte wie beim ESP32 (TCP_KEEPALIVE_* in dessen config.h). Die
+        Feineinstellung (KEEPIDLE/INTVL/CNT) ist Linux-spezifisch; wo sie
+        fehlt, gilt der OS-Standard (~2 h) – dann greift CONNECTION_TIMEOUT_S.
+        """
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            return
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE_S)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL_S)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_COUNT)
+            except OSError:
+                pass
 
     def _serve(self, sock):
         sock.settimeout(0.05)
@@ -434,6 +490,13 @@ class MorseNet:
                 return
 
             now = time.monotonic()
+
+            # Tote Verbindung erkennen: keine Daten (auch kein Keepalive-Echo)
+            # mehr empfangen, obwohl der Server auf jedes Keepalive antwortet.
+            if now - self._last_recv > CONNECTION_TIMEOUT_S:
+                self._emit("status", "Kein Lebenszeichen vom Server – trenne")
+                return
+
             if now - last_keepalive >= KEEPALIVE_INTERVAL_S:
                 try:
                     sock.sendall(HEADER.pack(STATUS_KEEPALIVE, 0, 0))
@@ -450,6 +513,7 @@ class MorseNet:
                 return
             if not data:
                 return
+            self._last_recv = time.monotonic()
             self._recv_buffer += data
             self._process_buffer(sock)
 
@@ -470,6 +534,8 @@ class MorseNet:
             self._emit("keepalive_reply",)
             return
         if status == STATUS_ACK:
+            with self._pending_lock:
+                self._pending_sends.pop(msg_id, None)
             self._emit("ack", msg_id)
             return
         if status in (STATUS_MESSAGE, STATUS_CHECK):
@@ -487,14 +553,18 @@ class MorseNet:
 # GUI
 # ---------------------------------------------------------------------------
 class MorseApp:
-    DOT = 2       # Pixel pro Druckpunkt
-    ROW_GAP = 3   # Abstand zwischen oberer und unterer Reihe
+    DOT = 2          # Pixel pro Druckpunkt
+    DIVIDER = 1      # Höhe der Trennlinie zwischen den beiden Reihen
+    ROW_GAP = 2      # Abstand um die Trennlinie
+    LINE_GAP = 6     # Abstand zwischen zwei gedruckten Zeilen
+    LINE_H = DOT + ROW_GAP + DIVIDER + ROW_GAP + DOT        # Höhe einer Zeile
+    LINE_ADVANCE = LINE_H + LINE_GAP                         # Zeilenanfang zu Zeilenanfang
 
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Morse-Client")
-        self.root.geometry("1000x780")
-        self.root.minsize(740, 580)
+        self.root.geometry("1100x800")
+        self.root.minsize(860, 600)
 
         self.events = queue.Queue()
         self.net = MorseNet(self.events)
@@ -506,7 +576,16 @@ class MorseApp:
         self.playing = False
         self._playback_bits = []
         self._playback_idx = 0
-        self.last_signal_payload = b""
+        # Zustand für die fortlaufende Drucker-Vorschau (append-only, flüssig)
+        self._preview_idx = 0
+        self._preview_writing_top = True
+        self._preview_y = 4
+        self._run_item = None      # Canvas-Objekt des aktuellen Punktlaufs
+        self._run_x0 = 0
+        self._run_y = 0
+        self._drawn_bits = 0       # bereits gezeichnete Bits der laufenden Aufnahme
+        self._page_empty = True    # noch nichts gezeichnet
+        self._pending_display = [] # Empfänge, die während der Aufnahme warten
 
         # Zähler / Debug-Werte
         self.sent_count = 0
@@ -536,10 +615,16 @@ class MorseApp:
         top.pack(fill=tk.X, padx=8, pady=(8, 4))
         tk.Label(top, text="Host:").pack(side=tk.LEFT)
         self.host_var = tk.StringVar(value=DEFAULT_HOST)
-        tk.Entry(top, textvariable=self.host_var, width=20).pack(side=tk.LEFT, padx=(2, 8))
+        self.host_entry = tk.Entry(top, textvariable=self.host_var, width=20)
+        self.host_entry.pack(side=tk.LEFT, padx=(2, 8))
         tk.Label(top, text="Port:").pack(side=tk.LEFT)
         self.port_var = tk.StringVar(value=str(DEFAULT_PORT))
-        tk.Entry(top, textvariable=self.port_var, width=6).pack(side=tk.LEFT, padx=(2, 8))
+        self.port_entry = tk.Entry(top, textvariable=self.port_var, width=6)
+        self.port_entry.pack(side=tk.LEFT, padx=(2, 8))
+        # Leertaste in den Eingabefeldern nicht als Zeichen einfügen,
+        # sondern als Morse-Taste verwenden.
+        self.host_entry.bind("<KeyPress-space>", self._on_key_press)
+        self.port_entry.bind("<KeyPress-space>", self._on_key_press)
         self.connect_btn = tk.Button(top, text="Verbinden", command=self._on_connect)
         self.connect_btn.pack(side=tk.LEFT)
         self.status_var = tk.StringVar(value="Starte ...")
@@ -574,15 +659,19 @@ class MorseApp:
         log_frame = tk.LabelFrame(self.root, text="Log")
         log_frame.pack(fill=tk.X, padx=8, pady=(4, 8))
         self.log_text = tk.Text(log_frame, height=5, state=tk.DISABLED, font=("Courier", 9))
-        lsb = tk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=lsb.set)
+        self.log_vbar = tk.Scrollbar(log_frame, orient=tk.VERTICAL,
+                                     command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=self.log_vbar.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        lsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.bind("<Configure>", lambda e: self._refresh_log_scrollbar())
 
         # Eingabe-Bindings
         self.root.bind_all("<KeyPress-space>", self._on_key_press)
         self.root.bind_all("<KeyRelease-space>", self._on_key_release)
         self.root.bind_all("<ButtonRelease-1>", self._on_button_release)
+        # Klick irgendwo ins Fenster -> Fokus von Eingabefeldern nehmen.
+        self.root.bind("<Button-1>", self._on_root_click)
 
 
     def _build_recording_monitor(self, parent):
@@ -629,12 +718,17 @@ class MorseApp:
         cv_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         self.signal_canvas = tk.Canvas(cv_frame, bg="white", highlightthickness=1,
                                        highlightbackground="#aaa")
-        hbar = tk.Scrollbar(cv_frame, orient=tk.HORIZONTAL, command=self.signal_canvas.xview)
-        vbar = tk.Scrollbar(cv_frame, orient=tk.VERTICAL, command=self.signal_canvas.yview)
-        self.signal_canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
+        self.signal_hbar = tk.Scrollbar(cv_frame, orient=tk.HORIZONTAL,
+                                        command=self.signal_canvas.xview)
+        self.signal_vbar = tk.Scrollbar(cv_frame, orient=tk.VERTICAL,
+                                        command=self.signal_canvas.yview)
+        self.signal_canvas.configure(xscrollcommand=self.signal_hbar.set,
+                                     yscrollcommand=self.signal_vbar.set)
         self.signal_canvas.grid(row=0, column=0, sticky="nsew")
-        vbar.grid(row=0, column=1, sticky="ns")
-        hbar.grid(row=1, column=0, sticky="ew")
+        self.signal_vbar.grid(row=0, column=1, sticky="ns")
+        self.signal_hbar.grid(row=1, column=0, sticky="ew")
+        # Scrollbalken nur anzeigen, wenn wirklich gescrollt werden kann
+        self.signal_canvas.bind("<Configure>", lambda e: self._refresh_scrollbars())
         cv_frame.rowconfigure(0, weight=1)
         cv_frame.columnconfigure(0, weight=1)
 
@@ -676,10 +770,11 @@ class MorseApp:
             self.tree.heading(c, text=headings[c])
             anchor = "w" if c in ("status", "signal") else "center"
             self.tree.column(c, width=widths[c], anchor=anchor, stretch=(c == "signal"))
-        vsb = tk.Scrollbar(parent, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree_vbar = tk.Scrollbar(parent, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=self.tree_vbar.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Configure>", lambda e: self._refresh_table_scrollbar())
 
 
     # -- Eingabe -------------------------------------------------------------
@@ -693,6 +788,12 @@ class MorseApp:
 
     def _on_key_press(self, event):
         self.key_down = True
+        return "break"  # verhindert z. B. Leerzeichen in den Eingabefeldern
+
+    def _on_root_click(self, event):
+        # Klick außerhalb der Eingabefelder -> Fokus vom Feld nehmen (deselecten)
+        if not isinstance(event.widget, tk.Entry):
+            self.root.focus_set()
 
     def _on_key_release(self, event):
         self.key_down = False
@@ -718,6 +819,7 @@ class MorseApp:
     def _sample_tick(self):
         now_ms = int(time.monotonic() * 1000)
         pressed = self.key_down
+        was_recording = self.sampler.recording
 
         if pressed and not self._key_was_down:
             self.sound.start_tone()
@@ -728,10 +830,26 @@ class MorseApp:
         if pressed and self.playing:
             self._stop_playback()
 
+        # Start einer neuen Aufnahme -> Separator (Zeilenumbruch + Leerzeile)
+        if pressed and not was_recording and not self.playing:
+            self._start_new_message()
+            self._drawn_bits = 0
+
         payload = self.sampler.tick(now_ms, pressed)
+
+        # Live-Vorschau: nur die neuen Bits anhängen (ein Bit pro Tick -> flüssig)
+        if self.sampler.recording and not self.playing:
+            bits = self.sampler.current_bits()
+            self._append_bits(bits[self._drawn_bits:])
+            self._drawn_bits = len(bits)
+
         if payload is not None:
             self.net.send_message(payload)
-            self._show_signal(payload)
+            # Während der Aufnahme zurückgehaltene Empfänge jetzt anzeigen/abspielen
+            while self._pending_display:
+                p = self._pending_display.pop(0)
+                self._append_message(p)
+                self._play_message(p)
 
         if self.sampler.recording and not self.playing:
             self._set_lamp(pressed)
@@ -770,26 +888,97 @@ class MorseApp:
         self._set_lamp(False)
 
 
-    # -- Signal-Vorschau (Thermodrucker) -------------------------------------
-    def _show_signal(self, payload):
-        self.last_signal_payload = payload
-        self.signal_canvas.delete("all")
-        y = 4
+    # -- Signal-Vorschau (Thermodrucker, fortlaufend) -------------------------
+    def _update_scrollregion(self):
         width = 4 + 384 * self.DOT
-        for top, bottom in printer_lines(payload):
-            for i, bit in enumerate(top):
-                if bit:
-                    x = 4 + i * self.DOT
+        self.signal_canvas.configure(
+            scrollregion=(0, 0, width + 4, max(self._preview_y + self.DOT, 1)))
+        self._refresh_scrollbars()
+
+    def _refresh_scrollbars(self):
+        if self.signal_canvas.xview() == (0.0, 1.0):
+            self.signal_hbar.grid_remove()
+        else:
+            self.signal_hbar.grid()
+        if self.signal_canvas.yview() == (0.0, 1.0):
+            self.signal_vbar.grid_remove()
+        else:
+            self.signal_vbar.grid()
+
+    def _refresh_table_scrollbar(self):
+        if self.tree.yview() == (0.0, 1.0):
+            self.tree_vbar.pack_forget()
+        else:
+            self.tree_vbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _refresh_log_scrollbar(self):
+        if self.log_text.yview() == (0.0, 1.0):
+            self.log_vbar.pack_forget()
+        else:
+            self.log_vbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _append_bits(self, bits):
+        """Hängt Bits ans Ende an, ohne das Canvas neu aufzubauen.
+
+        Layout wie beim Thermodrucker: obere Reihe (384 Punkte), Trennlinie,
+        untere Reihe (384 Punkte). Zusammenhängende Punkte werden als EIN
+        Rechteck gezeichnet (statt ein Rechteck pro Punkt) -> flüssig.
+        """
+        width = 4 + 384 * self.DOT
+        for bit in bits:
+            if bit:
+                x = 4 + self._preview_idx * self.DOT
+                if self._run_item is not None:
+                    self.signal_canvas.coords(
+                        self._run_item,
+                        self._run_x0, self._run_y, x + self.DOT, self._run_y + self.DOT)
+                else:
+                    self._run_x0 = x
+                    self._run_y = self._preview_y
+                    self._run_item = self.signal_canvas.create_rectangle(
+                        x, self._run_y, x + self.DOT, self._run_y + self.DOT,
+                        fill="#111", outline="")
+            else:
+                self._run_item = None
+            self._preview_idx += 1
+            if self._preview_idx == 384:
+                self._run_item = None  # Lauf endet am Zeilenrand
+                if self._preview_writing_top:
+                    # obere Reihe voll -> Trennlinie, dann untere Reihe
+                    self._preview_y += self.DOT + self.ROW_GAP
                     self.signal_canvas.create_rectangle(
-                        x, y, x + self.DOT, y + self.DOT, fill="#111", outline="")
-            y += self.DOT + self.ROW_GAP
-            for i, bit in enumerate(bottom):
-                if bit:
-                    x = 4 + i * self.DOT
-                    self.signal_canvas.create_rectangle(
-                        x, y, x + self.DOT, y + self.DOT, fill="#111", outline="")
-            y += self.DOT + self.ROW_GAP + 6
-        self.signal_canvas.configure(scrollregion=(0, 0, width, max(y, 1)))
+                        4, self._preview_y, width, self._preview_y + self.DIVIDER,
+                        fill="#999", outline="")
+                    self._preview_y += self.DIVIDER + self.ROW_GAP
+                    self._preview_writing_top = False
+                    self._preview_idx = 0
+                else:
+                    # Zeile voll -> nächste Zeile
+                    self._preview_y += self.DOT + self.LINE_GAP
+                    self._preview_writing_top = True
+                    self._preview_idx = 0
+        self._update_scrollregion()
+
+    def _start_new_message(self):
+        """Beginnt eine neue Nachricht: Zeilenumbruch + Leerzeile als Abstand."""
+        self._run_item = None
+        if not self._page_empty:
+            # Laufende (Teil-)Zeile abschließen
+            if self._preview_writing_top:
+                if self._preview_idx != 0:
+                    self._preview_y += self.LINE_ADVANCE
+            else:
+                self._preview_y += self.DOT + self.LINE_GAP
+            # Leerzeile
+            self._preview_y += self.LINE_ADVANCE
+        self._preview_idx = 0
+        self._preview_writing_top = True
+        self._page_empty = False
+        self._update_scrollregion()
+
+    def _append_message(self, payload):
+        self._start_new_message()
+        self._append_bits(_bits_of(payload))
 
     # -- Ereignisse aus dem Netzwerk-Thread ----------------------------------
     def _poll_events(self):
@@ -800,8 +989,6 @@ class MorseApp:
         except queue.Empty:
             pass
         self._update_monitor()
-        if self.sampler.recording and not self.playing:
-            self._show_signal(bytes(self.sampler.current_bytes))
         self.root.after(100, self._poll_events)
 
     def _handle_event(self, kind, rest):
@@ -824,8 +1011,12 @@ class MorseApp:
             self.recv_count += 1
             self.last_server_msg_id = mid
             self._table_add("←", "recv", mid, payload, "empfangen")
-            self._show_signal(payload)
-            self._play_message(payload)
+            if self.sampler.recording:
+                # Während der eigenen Aufnahme zurückhalten, danach anzeigen/abspielen.
+                self._pending_display.append(payload)
+            else:
+                self._append_message(payload)
+                self._play_message(payload)
         elif kind == "delivery_ack":
             self.delivery_ack_count += 1
             self._table_update("recv", rest[0], "bestätigt")
@@ -846,6 +1037,7 @@ class MorseApp:
                   _preview(payload_to_bits(payload), 24))
         self.tree.insert("", "end", iid=iid, values=values)
         self._trim_table()
+        self._refresh_table_scrollbar()
 
     def _table_update(self, key_prefix, mid, status):
         iid = "%s-%d" % (key_prefix, mid)
@@ -901,6 +1093,7 @@ class MorseApp:
         self.log_text.insert(tk.END, "[%s] %s\n" % (time.strftime("%H:%M:%S"), text))
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
+        self._refresh_log_scrollbar()
 
     # -- Beenden --------------------------------------------------------------
     def _on_close(self):

@@ -32,7 +32,7 @@ constexpr int port = 6969;                                   // Port des Servers
 #define TCP_KEEPALIVE_COUNT       3  // erfolglose Proben, bis die Verbindung als tot gilt
 #define MAX_CONNECT_RETRIES 3     // max. DNS-/TCP-Versuche, bevor ein Zustand zurückfällt
 #define QUEUE_SIZE 10             // Pufferplätze der Nachrichten-Queues
-#define SOUND_FREQ 200            // Tonhöhe des Lautsprechers in Hz
+#define SOUND_FREQ 700            // Tonhöhe des Lautsprechers in Hz
 
 // ------------------------- Pins ----------------------------------------
 // GPIO-Nummern der angeschlossenen Hardware (ESP32-C5-DevKitC-1).

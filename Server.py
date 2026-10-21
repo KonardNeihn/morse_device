@@ -226,7 +226,7 @@ def build_status():
                 "addr": addr,
                 "last_seen": datetime.fromtimestamp(entry["last_seen"]).strftime("%Y-%m-%d %H:%M:%S"),
                 "idle": fmt_duration(now - entry["last_seen"]),
-                "buffered": len(entry["buffer"]),
+                "pending": len(entry["buffer"]),
             })
 
     devices.sort(key=lambda d: d["mac"])
@@ -312,7 +312,7 @@ def _device_rows_html(devices):
         rows.append(
             f"<tr class=\"{cls}\"><td>{d['mac']}</td><td>{label}</td>"
             f"<td>{d['addr'] or '–'}</td><td>{d['last_seen']}</td>"
-            f"<td>{d['idle']}</td><td>{d['buffered']}</td></tr>"
+            f"<td>{d['idle']}</td><td>{d['pending']}</td></tr>"
         )
     return "\n".join(rows)
 
@@ -333,7 +333,7 @@ def render_html(status):
     )
     parts.append(
         "<table><thead><tr><th>MAC</th><th>Status</th><th>Adresse</th>"
-        "<th>Letzter Kontakt</th><th>Idle</th><th>Puffer</th></tr></thead>"
+        "<th>Letzter Kontakt</th><th>Idle</th><th>Pending</th></tr></thead>"
         "<tbody id=\"devices\">"
     )
     parts.append(_device_rows_html(status["devices"]))
@@ -358,7 +358,7 @@ async function refresh(){
       var label=d.online?'online':'offline';
       return '<tr class="'+cls+'"><td>'+d.mac+'</td><td>'+label+'</td>'+
              '<td>'+(d.addr||'–')+'</td><td>'+d.last_seen+'</td>'+
-             '<td>'+d.idle+'</td><td>'+d.buffered+'</td></tr>';
+             '<td>'+d.idle+'</td><td>'+d.pending+'</td></tr>';
     }).join('');
     var u=document.getElementById('unregistered');
     if(s.unregistered_connections&&s.unregistered_connections.length){

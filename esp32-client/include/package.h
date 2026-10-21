@@ -16,7 +16,6 @@
 #include <freertos/queue.h>
 
 // status-Feld eines Pakets:
-//   0 -> keep alive (Verbindung am Leben halten)
 //   1 -> normale Morse-Nachricht (Broadcast)
 //   2 -> Bestätigung (je Richtung: Zustell-ACK bzw. Annahme-ACK)
 //   3 -> server_check (Server sendet zurück statt zu broadcasten)
