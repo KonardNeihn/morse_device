@@ -492,13 +492,19 @@ def reaper_loop():
     while True:
         time.sleep(60)
         now = time.time()
+        forgotten = False
         with registry_lock:
             for mac in list(registry.keys()):
                 entry = registry[mac]
                 if entry["handler"] is None and now - entry["last_seen"] > TTL_SECONDS:
                     del registry[mac]
+                    forgotten = True
                     log(f"Forgot offline MAC: {fmt_mac(mac)}", WARNING)
-                    save_state()
+        # save_state() greift selbst auf registry_lock zu (nicht reentrant).
+        # Deshalb unbedingt AUSSERHALB des Locks speichern, sonst deadlockt der
+        # Reaper-Thread und blockiert dauerhaft alle Registry-Zugriffe.
+        if forgotten:
+            save_state()
 
 
 def main():
