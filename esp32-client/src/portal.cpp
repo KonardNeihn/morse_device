@@ -436,9 +436,13 @@ void portalStart() {
     ap_netif = esp_netif_create_default_wifi_ap();  // inkl. DHCP + 192.168.4.1
 
   esp_wifi_stop();
-  esp_wifi_set_mode(WIFI_MODE_APSTA);
+  vTaskDelay(pdMS_TO_TICKS(100));  // Treiber sicher auslaufen lassen
+  if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK)
+    ESP_LOGE(TAG, "set_mode APSTA fehlgeschlagen");
   applyApConfig();
-  esp_wifi_start();
+  esp_err_t start_err = esp_wifi_start();
+  if (start_err != ESP_OK)
+    ESP_LOGE(TAG, "esp_wifi_start fehlgeschlagen (err=%d)", (int)start_err);
 
   startHttpServer();
   startDnsServer();
@@ -455,8 +459,12 @@ void portalStop() {
   stopDnsServer();
 
   esp_wifi_stop();
-  esp_wifi_set_mode(WIFI_MODE_STA);
-  esp_wifi_start();
+  vTaskDelay(pdMS_TO_TICKS(100));  // Treiber sicher auslaufen lassen
+  if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK)
+    ESP_LOGE(TAG, "set_mode STA fehlgeschlagen");
+  esp_err_t start_err = esp_wifi_start();
+  if (start_err != ESP_OK)
+    ESP_LOGE(TAG, "esp_wifi_start fehlgeschlagen (err=%d)", (int)start_err);
 
   active = false;
   ESP_LOGI(TAG, "Portal gestoppt");

@@ -483,12 +483,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # Zugriffe landen im Server-Log (journal) statt auf stderr.
-        # Bots/Scanner probieren wilde Pfade aus -> 404er sind Log-Rauschen.
-        if len(args) >= 2 and str(args[1]) == "404":
-            return
-        # Das 1-s-Polling von /status.json (Live-Update) ist ebenfalls nur Rauschen.
-        if getattr(self, "path", "").split("?", 1)[0] == "/status.json":
-            return
+        # Keine Filter mehr: ALLES wird geloggt (auch 404er und /status.json-Polling).
         log(fmt % args, INFO)
 
 

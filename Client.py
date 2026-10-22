@@ -374,10 +374,17 @@ class MorseNet:
             self.thread.join(timeout=2)
 
     def send_message(self, payload):
-        """Morse-Payload mit neuer client_msg_id in die Sendeschlange legen."""
+        """Morse-Payload mit neuer client_msg_id in die Sendeschlange legen.
+
+        Die msg_id ist zeitbasiert (Nanosekunden), damit sie auch nach einem
+        Neustart des Clients NICHT mit früheren msg_ids kollidiert. Sonst würde
+        der Server die Nachricht als Retry einstufen und nicht puffern/broadcasten.
+        """
         with self._msg_id_lock:
-            self._next_msg_id += 1
-            mid = self._next_msg_id
+            mid = time.time_ns()
+            if mid <= self._next_msg_id:
+                mid = self._next_msg_id + 1
+            self._next_msg_id = mid
         self.send_queue.put(HEADER.pack(STATUS_MESSAGE, mid, len(payload)) + payload)
         with self._pending_lock:
             self._pending_sends[mid] = payload

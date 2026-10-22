@@ -139,12 +139,35 @@ void checkPins() {
   else if (raw < ROTARY_TH_5) pos = 4;  // SERVER_CHECK
   else                        pos = 5;  // HOTSPOT
 
+  // Entprellen: Der Drehschalter (ADC/Spannungsteiler) kann an den
+  // Positionsgrenzen flattern. Ohne Entprellung würde jeder Wackler ein
+  // portalStart()/portalStop() auslösen – und das ständige esp_wifi_stop()/
+  // esp_wifi_start() kann den WLAN-Treiber in einen Zustand bringen, in dem
+  // der Hotspot nicht mehr hochkommt (erst Strom-Reset hilft). Deshalb erst
+  // nach 2 identischen Messungen (~2 s) umschalten.
+  static int stable_pos = -1;  // zuletzt bestätigte Position
+  static int last_pos   = -1;  // letzte gelesene Position
+  static int same_count = 0;   // wie oft in Folge gleich gelesen
+
+  if (pos == last_pos)
+    same_count++;
+  else {
+    last_pos = pos;
+    same_count = 1;
+  }
+
+  if (same_count >= 2)
+    stable_pos = pos;
+  // Beim allerersten Lesen die Position sofort übernehmen (kein Boot-Verzug).
+  if (stable_pos < 0)
+    stable_pos = pos;
+
   // Genau EIN Modus aktiv; NORMAL = alle Flags false.
-  NO_SOUND_MODE     = (pos == 1);
-  NO_PRINTER_MODE   = (pos == 2);
-  SELF_CHECK_MODE   = (pos == 3);
-  SERVER_CHECK_MODE = (pos == 4);
-  HOTSPOT_MODE      = (pos == 5);
+  NO_SOUND_MODE     = (stable_pos == 1);
+  NO_PRINTER_MODE   = (stable_pos == 2);
+  SELF_CHECK_MODE   = (stable_pos == 3);
+  SERVER_CHECK_MODE = (stable_pos == 4);
+  HOTSPOT_MODE      = (stable_pos == 5);
 }
 
 void testMosfet() {
