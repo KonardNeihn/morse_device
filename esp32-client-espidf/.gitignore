@@ -7,3 +7,4 @@
 # ESP-IDF (idf.py build)
 build/
 sdkconfig.old
+sdkconfig
