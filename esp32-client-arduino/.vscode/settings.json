@@ -1,0 +1,7 @@
+{
+    "clangd.arguments": [
+        "--compile-commands-dir=/home/yourmum/Arduino/morse_device/esp32-client-arduino",
+        "--query-driver=/home/yourmum/.platformio/packages/toolchain-*/bin/*,/home/yourmum/.platformio/packages/tool-*/bin/*"
+    ],
+    "clangd.path": "/home/yourmum/.platformio/packages/tool-clangd-esp/bin/clangd"
+}

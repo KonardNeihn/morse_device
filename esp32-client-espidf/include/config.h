@@ -32,7 +32,7 @@ constexpr int port = 6969;                                   // Port des Servers
 #define TCP_KEEPALIVE_COUNT       3  // erfolglose Proben, bis die Verbindung als tot gilt
 #define MAX_CONNECT_RETRIES 3     // max. DNS-/TCP-Versuche, bevor ein Zustand zurückfällt
 #define QUEUE_SIZE 10             // Pufferplätze der Nachrichten-Queues
-#define SOUND_FREQ 500            // Tonhöhe des Lautsprechers in Hz
+#define SOUND_FREQ 700            // Tonhöhe des Lautsprechers in Hz
 
 // ------------------------- Pins ----------------------------------------
 // GPIO-Nummern der angeschlossenen Hardware (ESP32-C5-DevKitC-1).
@@ -73,7 +73,7 @@ constexpr int port = 6969;                                   // Port des Servers
 //
 // Einfacher Ansatz statt Spannungsmessung: Nach dem Booten einmal 30 s warten
 // (Erstaufladung), und zwischen zwei Druckzeilen 5 s nachladen.
-#define PRINT_BOOT_DELAY_MS 30000  // Wartezeit nach dem Booten vor dem ersten Druck
+#define PRINT_BOOT_DELAY_MS 60000  // Wartezeit nach dem Booten vor dem ersten Druck
 #define PRINT_LINE_DELAY_MS 5000   // Wartezeit zwischen zwei Druckzeilen
 
 

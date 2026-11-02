@@ -560,7 +560,8 @@ class MorseNet:
 # GUI
 # ---------------------------------------------------------------------------
 class MorseApp:
-    DOT = 2          # Pixel pro Druckpunkt
+    DOT = 2          # Pixel pro Druckpunkt (vertikal)
+    X_PX = 1         # Pixel pro Abtastpunkt horizontal (schmalere Striche)
     DIVIDER = 1      # Höhe der Trennlinie zwischen den beiden Reihen
     ROW_GAP = 2      # Abstand um die Trennlinie
     LINE_GAP = 6     # Abstand zwischen zwei gedruckten Zeilen
@@ -593,6 +594,7 @@ class MorseApp:
         self._drawn_bits = 0       # bereits gezeichnete Bits der laufenden Aufnahme
         self._page_empty = True    # noch nichts gezeichnet
         self._pending_display = [] # Empfänge, die während der Aufnahme warten
+        self._play_queue = []      # wartende Nachrichten für die Wiedergabe
 
         # Zähler / Debug-Werte
         self.sent_count = 0
@@ -855,8 +857,7 @@ class MorseApp:
             # Während der Aufnahme zurückgehaltene Empfänge jetzt anzeigen/abspielen
             while self._pending_display:
                 p = self._pending_display.pop(0)
-                self._append_message(p)
-                self._play_message(p)
+                self._enqueue_playback(p)
 
         if self.sampler.recording and not self.playing:
             self._set_lamp(pressed)
@@ -864,14 +865,22 @@ class MorseApp:
         self.root.after(SAMPLING_RATE_MS, self._sample_tick)
 
     # -- Wiedergabe ----------------------------------------------------------
-    def _play_message(self, payload):
-        bits = []
-        for b in payload:
-            for i in range(7, -1, -1):
-                bits.append((b >> i) & 1)
-        if not bits:
+    def _enqueue_playback(self, payload):
+        self._play_queue.append(payload)
+        if not self.playing:
+            self._start_playback()
+
+    def _start_playback(self):
+        if not self._play_queue:
+            self.playing = False
+            self._set_lamp(False)
             return
-        self._stop_playback()
+        payload = self._play_queue.pop(0)
+        bits = _bits_of(payload)
+        if not bits:
+            self._start_playback()
+            return
+        self._start_new_message()
         self.sound.play_bits(payload)
         self.playing = True
         self._playback_bits = bits
@@ -879,27 +888,33 @@ class MorseApp:
         self._playback_step()
 
     def _playback_step(self):
-        if not self.playing or self._playback_idx >= len(self._playback_bits):
+        if not self.playing:
+            return
+        if self._playback_idx >= len(self._playback_bits):
             self.playing = False
             self._set_lamp(False)
+            self._start_playback()
             return
         bit = self._playback_bits[self._playback_idx]
         self._playback_idx += 1
+        self._append_bits([bit])
         self._set_lamp(bool(bit))
         self.root.after(SAMPLING_RATE_MS, self._playback_step)
 
     def _stop_playback(self):
         self.playing = False
         self._playback_bits = []
+        self._play_queue.clear()
         self.sound.stop()
         self._set_lamp(False)
 
 
     # -- Signal-Vorschau (Thermodrucker, fortlaufend) -------------------------
     def _update_scrollregion(self):
-        width = 4 + 384 * self.DOT
+        width = 4 + 384 * self.X_PX
         self.signal_canvas.configure(
             scrollregion=(0, 0, width + 4, max(self._preview_y + self.DOT, 1)))
+        self.signal_canvas.yview_moveto(1.0)
         self._refresh_scrollbars()
 
     def _refresh_scrollbars(self):
@@ -931,19 +946,19 @@ class MorseApp:
         untere Reihe (384 Punkte). Zusammenhängende Punkte werden als EIN
         Rechteck gezeichnet (statt ein Rechteck pro Punkt) -> flüssig.
         """
-        width = 4 + 384 * self.DOT
+        width = 4 + 384 * self.X_PX
         for bit in bits:
             if bit:
-                x = 4 + self._preview_idx * self.DOT
+                x = 4 + self._preview_idx * self.X_PX
                 if self._run_item is not None:
                     self.signal_canvas.coords(
                         self._run_item,
-                        self._run_x0, self._run_y, x + self.DOT, self._run_y + self.DOT)
+                        self._run_x0, self._run_y, x + self.X_PX, self._run_y + self.DOT)
                 else:
                     self._run_x0 = x
                     self._run_y = self._preview_y
                     self._run_item = self.signal_canvas.create_rectangle(
-                        x, self._run_y, x + self.DOT, self._run_y + self.DOT,
+                        x, self._run_y, x + self.X_PX, self._run_y + self.DOT,
                         fill="#111", outline="")
             else:
                 self._run_item = None
@@ -1022,8 +1037,7 @@ class MorseApp:
                 # Während der eigenen Aufnahme zurückhalten, danach anzeigen/abspielen.
                 self._pending_display.append(payload)
             else:
-                self._append_message(payload)
-                self._play_message(payload)
+                self._enqueue_playback(payload)
         elif kind == "delivery_ack":
             self.delivery_ack_count += 1
             self._table_update("recv", rest[0], "bestätigt")
@@ -1043,6 +1057,7 @@ class MorseApp:
         values = (ts, direction, str(mid), str(len(payload)), status,
                   _preview(payload_to_bits(payload), 24))
         self.tree.insert("", "end", iid=iid, values=values)
+        self.tree.see(iid)
         self._trim_table()
         self._refresh_table_scrollbar()
 

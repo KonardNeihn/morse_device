@@ -20,6 +20,10 @@
 #include "package.h"
 #include "printer.h"
 
+#include <esp_log.h>
+
+static const char* TAG = "printer";
+
 void PrintTask(void* pvParameters) {
   Package package;
   static bool top_line[384] = { false };    // obere Punktreihe (384 Pixel)
@@ -30,6 +34,7 @@ void PrintTask(void* pvParameters) {
   // Erstaufladung des Supercaps abwarten, bevor überhaupt gedruckt werden darf
   // (~30 s nach dem Booten). Zwischen den Zeilen wartet print() dann nur noch 5 s.
   vTaskDelay(pdMS_TO_TICKS(PRINT_BOOT_DELAY_MS));
+  ESP_LOGI(TAG, "waited initial 60s for charging");
 
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(100));  // kleine Pause (Polling vermeiden)

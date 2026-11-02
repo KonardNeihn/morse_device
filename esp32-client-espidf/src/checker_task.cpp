@@ -42,11 +42,11 @@ void CheckerTask(void* pvParameters) {
         break;
 
       case DNS_RESOLVE:
-        showStatus(3);  // 3x blinken
+        showStatus(2);  // 2x blinken
         break;
 
       case TCP_CONNECT:
-        showStatus(4);  // 4x blinken
+        showStatus(3);  // 3x blinken
         break;
 
       case RUNNING:

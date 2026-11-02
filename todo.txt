@@ -1,0 +1,3 @@
+client.py keep alive - manuelle oder automatische???
+
+client.py und server.py in mehrere dateien splitten
