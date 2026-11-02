@@ -1,0 +1,29 @@
+idf_component_register(
+    SRCS
+        "app_state.cpp"
+        "checker_task.cpp"
+        "connection_task.cpp"
+        "hardware.cpp"
+        "input_task.cpp"
+        "main.cpp"
+        "network.cpp"
+        "package.cpp"
+        "playback_task.cpp"
+        "portal.cpp"
+        "print_task.cpp"
+        "printer.cpp"
+        "wifi_config.cpp"
+    INCLUDE_DIRS "../include"
+    REQUIRES
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_http_server
+        nvs_flash
+        esp_driver_uart
+        esp_driver_ledc
+        esp_driver_gpio
+        esp_adc
+        lwip
+        esp_timer
+)

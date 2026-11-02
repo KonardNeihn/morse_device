@@ -1,0 +1,68 @@
+#pragma once
+
+// =============================================================================
+// app_state.h  –  geteilter Zustand zwischen den Tasks
+//
+// Die Tasks laufen parallel auf dem einzigen Kern (Single-Core-RISC-V). Damit
+// reden können, teilen sie sich diese globalen Variablen. Vorsicht: Gemeinsame
+// Daten brauchen Schutz – deshalb sind die Modus-Flags `volatile` und die
+// Nachrichten laufen über Queues (die FreeRTOS-threadsicher sind).
+// =============================================================================
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>    // QueueHandle_t
+#include <lwip/sockets.h>      // sockaddr_storage, socklen_t
+
+// Die Zustände der Netzwerk-Zustandsmaschine (siehe connection_task.cpp):
+//   WIFI_CONNECT  ->  WLAN verbinden
+//   DNS_RESOLVE   ->  Hostname auflösen
+//   TCP_CONNECT   ->  TCP-Verbindung aufbauen
+//   RUNNING       ->  normaler Betrieb (senden/empfangen)
+enum ConnectionState {
+  WIFI_CONNECT,
+  DNS_RESOLVE,
+  TCP_CONNECT,
+  RUNNING
+};
+
+// ------------------------- geteilter Zustand -------------------------
+// Diese Variablen werden von mehreren Tasks parallel verwendet.
+
+extern ConnectionState state;  // aktueller Zustand der Zustandsmaschine
+
+extern struct sockaddr_storage server_addr;  // aufgelöste Server-Adresse
+extern socklen_t server_addr_len;            // Länge davon
+
+// Modus-Flags (vom Drehschalter gesetzt, `volatile` wegen Task-Zugriff).
+//   true = Modus aktiv (Drehschalter steht auf LOW).
+extern volatile bool NO_SOUND_MODE;      // Ton aus
+extern volatile bool NO_PRINTER_MODE;    // Drucker aus
+extern volatile bool SELF_CHECK_MODE;    // Selbsttest (ohne Netzwerk)
+extern volatile bool SERVER_CHECK_MODE;  // Pakete zum Server zurückschicken
+extern volatile bool HOTSPOT_MODE;        // Hotspot-Modus (AP + Webserver)
+
+// Wird vom Portal (HTTP-Handler) gesetzt, sobald neue WLAN-Daten gespeichert
+// wurden. Der ConnectionTask verbindet dann mit den neuen Zugangsdaten neu.
+extern volatile bool wifiReconnectRequested;
+
+// Kommunikationskanäle zwischen den Tasks.
+// Es werden Zeiger auf Package-Objekte durchgereicht (Inhalt liegt im Heap).
+extern QueueHandle_t sendQueue;      // InputTask    -> Netzwerk (TCP)
+extern QueueHandle_t playbackQueue;  // Netzwerk     -> PlaybackTask
+extern QueueHandle_t printQueue;     // PlaybackTask -> PrintTask
+
+// TCP-Socket (Dateideskriptor, -1 = kein Socket offen).
+extern int sock;
+
+// true, solange der InputTask gerade eine Morse-Eingabe aufzeichnet. Dann
+// spielt der PlaybackTask keine Pakete ab und die LED spiegelt die Taste.
+extern volatile bool isRecording;
+
+// true, solange der PlaybackTask gerade ein Paket abspielt. Der CheckerTask
+// darf dann die Status-LED nicht blinken (die LED gehört dem PlaybackTask).
+extern volatile bool isPlaying;
+
+// Queue für Zustell-ACKs, die erst NACH dem Drucken gesendet werden dürfen.
+// Der PrintTask legt die server_msg_ids hier ab, der ConnectionTask sendet sie.
+extern QueueHandle_t ackQueue;
+

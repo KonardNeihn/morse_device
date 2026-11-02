@@ -1,0 +1,14 @@
+CompileFlags:
+  # ESP-IDF (idf.py build) legt die Compilation-Datenbank unter build/ an.
+  # Sie enthält auch die eigenen Quelldateien des Projekts.
+  CompilationDatabase: build
+  Remove:
+    # GCC/RISC-V-spezifische Flags, die der Host-clang nicht kennt.
+    - -mlongcalls
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    # picolibc spec files sind nur für die Cross-Toolchain relevant.
+    - -specs=
+    # Im Editor nicht jede Warnung als Fehler behandeln.
+    - -Werror
