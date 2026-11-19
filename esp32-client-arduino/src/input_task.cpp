@@ -1,13 +1,14 @@
-#include "app.h"
-#include "config.h"
-#include "esp32-hal.h"
-#include "hardware.h"
-#include "package.h"
-#include "log.h"
+#include "app.h"          // sendQueue, isRecording, TEST_MODE
+#include "config.h"       // SAMPLING_RATE_MS, RECORDING_TIMEOUT_MS, TCP_STATUS_*
+#include "esp32-hal.h"     // millis() (Arduino-Hardwareabstraktion)
+#include "freertos/projdefs.h"
+#include "hardware.h"     // buttonIsPressed, setLedHigh, setLedLow
+#include "package.h"      // Package, putPackageIntoQueue
+#include "log.h"          // LOGI/LOGW
 
-#include <Arduino.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <Arduino.h>  // Serial, millis, setup/loop (Arduino-Kern)
+#include <freertos/FreeRTOS.h>  // vTaskDelay, pdMS_TO_TICKS
+#include <freertos/task.h>  // vTaskDelay, xTaskCreate
 
 
 // =============================================================================
@@ -55,8 +56,8 @@ void InputTask(void* pvParameters) {
         }
         package.payload.push_back(signal);  // fertiges Byte anhängen
       }
+      showStatus(1);          // blinkt, um zu zeigen, dass aufnahme beenedet
       isRecording = false;                        // Aufnahme beendet
-      setLedLow();         // LED aus
 
       // --- Paket ist fertig: passenden Zielort wählen. ---
       package.size = package.payload.size();
@@ -64,12 +65,12 @@ void InputTask(void* pvParameters) {
 
       if (TEST_MODE) {
         // Server-Check: Paket wird zum Server geschickt und kommt zurück.
-        package.status = 3;
+        package.status = TCP_STATUS_TEST;
         if (!putPackageIntoQueue(sendQueue, package))
           LOGW(TAG, "sendQueue overflow");
       } else {
         // Normalbetrieb: normales Paket an den Server senden.
-        package.status = 1;
+        package.status = TCP_STATUS_MESSAGE;
         if (!putPackageIntoQueue(sendQueue, package))
           LOGW(TAG, "sendQueue overflow");
       }

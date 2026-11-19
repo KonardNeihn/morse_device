@@ -1,16 +1,16 @@
-#include "app.h"
-#include "config.h"
-#include "package.h"
-#include "log.h"
-#include "network.h"
-#include "hardware.h"
+#include "app.h"        // printQueue, PRINTER_MODE
+#include "config.h"     // PRINT_BOOT_DELAY_MS, PRINT_LINE_DELAY_MS, TCP_STATUS_*
+#include "package.h"    // Package, getPackageFromQueue
+#include "log.h"       // LOGI
+#include "network.h"    // queueDeliveryAck
+#include "hardware.h"   // makePrinterReady, print, printerWriteByte, printerFlush
 
 
-#include <Arduino.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <Arduino.h>  // Serial, millis, setup/loop (Arduino-Kern)
+#include <freertos/FreeRTOS.h>  // vTaskDelay, pdMS_TO_TICKS
+#include <freertos/task.h>  // vTaskDelay, xTaskCreate
 
-#include <cstring>   // memset
+#include <cstring>      // memset   // memset
 
 // =============================================================================
 // print_task.cpp  –  "Print Task" (Priorität 2)
@@ -110,7 +110,7 @@ void PrintTask(void* pvParameters) {
 
     // Druck ist fertig -> jetzt erst das Zustell-ACK an den Server schicken.
     // (Nur für Pakete, die vom Server kamen: status 1 = Nachricht, 3 = Check.)
-    if (package.status == 1 || package.status == 3)
+    if (package.status == TCP_STATUS_MESSAGE || package.status == TCP_STATUS_TEST)
       queueDeliveryAck(package.msg_id);
   }
 }

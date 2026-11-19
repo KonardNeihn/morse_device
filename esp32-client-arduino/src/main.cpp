@@ -13,17 +13,17 @@
 // Danach läuft alles nebenläufig über FreeRTOS-Tasks weiter.
 //
 // =============================================================================
-#include "hardware.h"
-#include "log.h"
-#include "storage.h"
-#include "app.h"
-#include "package.h"
-#include "network.h"
+#include "hardware.h"       // hardwareInit, printerInit
+#include "log.h"            // LOGI
+#include "storage.h"        // loadWifiConfig
+#include "app.h"            // Task-Prototypen (ConnectionTask, InputTask, ...)
+#include "package.h"        // Package (nur indirekt fuer die Queues)
+#include "network.h"        // wifiInit
 
-#include <Arduino.h>
-#include <cstddef>
-#include <freertos/task.h>   // vTaskDelete
-#include <freertos/idf_additions.h>
+#include <Arduino.h>  // Serial, millis, setup/loop (Arduino-Kern)
+#include <cstddef>            // size_t (sizeof)
+#include <freertos/task.h>    // xTaskCreate, vTaskDelete, TaskFunction_t   // vTaskDelete
+#include <freertos/idf_additions.h> // esp_get_idf_version()
 
 
 static const char* TAG = "main";

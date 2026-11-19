@@ -69,4 +69,8 @@ constexpr int port = 6969;                                   // Port des Servers
 #define PRINT_BOOT_DELAY_MS 60000  // Wartezeit nach dem Booten vor dem ersten Druck
 #define PRINT_LINE_DELAY_MS 5000   // Wartezeit zwischen zwei Druckzeilen
 
-
+// ------------------------------------------------------------------------------
+#define TCP_STATUS_MESSAGE 1
+#define TCP_STATUS_ACK 2
+#define TCP_STATUS_TEST 3
+#define TCP_STATUS_REGISTER 4

@@ -12,10 +12,10 @@
 //   - Kein nvs_handle_t – Preferences kapselt das mit begin()/end().
 // =============================================================================
 
-#include "storage.h"
-#include "log.h"
+#include "storage.h"     // eigene Prototypen
+#include "log.h"        // LOGI/LOGD/LOGE
 
-#include <Preferences.h>
+#include <Preferences.h>  // Preferences (NVS-Lese-/Schreib-API)
 #include <string.h>   // strlcpy
 
 static const char* TAG = "storage";

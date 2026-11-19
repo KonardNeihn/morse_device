@@ -14,28 +14,25 @@
 //   Byte 11..  : Payload (Morse-Bytes bzw. beim Register die 6-Byte-MAC)
 // =============================================================================
 
-#include "network.h"
-#include "app.h"
-#include "config.h"
-#include "esp_wifi_types_generic.h"
-#include "freertos/projdefs.h"
-#include "package.h"
-#include "log.h"
-#include "storage.h"
+#include "network.h"             // eigene Prototypen
+#include "app.h"                 // state, sendQueue, playbackQueue, HOTSPOT_MODE, newWifiCredentials
+#include "config.h"              // server_address, port, TCP_KEEPALIVE_*, TCP_STATUS_*
+#include "package.h"            // Package, putPackageIntoQueue, getPackageFromQueue, packageToText
+#include "log.h"                 // LOGI/LOGW/LOGV
+#include "storage.h"            // getSsid1/2, getPassword1/2, hasWifiConfig
 
-#include <WiFi.h>
-#include <WiFiMulti.h>
-#include <Arduino.h>
+#include <WiFi.h>                 // WiFi-API (mode, status, softAP, macAddress, localIP, ...)
+#include <WiFiMulti.h>           // WiFiMulti (addAP, run)
+#include <Arduino.h>              // millis, micros
 
-#include <cstdint>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <freertos/FreeRTOS.h>     // vTaskDelay
+#include <freertos/task.h>       // pdMS_TO_TICKS, vTaskDelay
 #include <lwip/sockets.h>   // SO_KEEPALIVE, SOL_SOCKET, IPPROTO_TCP, TCP_KEEPIDLE, ...
 
-#include <algorithm>
-#include <vector>
-#include <map>
-#include <set>
+#include <algorithm>             // std::find
+#include <vector>                // std::vector (sendPackageBytes-Puffer)
+#include <map>                   // std::map (pendingSends)
+#include <set>                   // std::set (processedIds, ackedIds)
 
 static const char* TAG = "network";
 
@@ -323,8 +320,8 @@ static bool sendPackageBytes(const Package& pkg) {
 // Aufgerufen vom PrintTask nach dem Druck.
 void queueDeliveryAck(uint64_t server_msg_id) {
   Package ack;
-  ack.status = 2;   // ACK
-  ack.msg_id = server_msg_id;   // sendPackage() behält die msg_id bei status==2
+  ack.status = TCP_STATUS_ACK;
+  ack.msg_id = server_msg_id;
   ack.size = 0;
 
   if (!putPackageIntoQueue(sendQueue, ack))
@@ -335,7 +332,7 @@ void queueDeliveryAck(uint64_t server_msg_id) {
 // Registrierung: eigene MAC-Adresse an den Server schicken (nach jedem Verbinden).
 void sendRegister() {
   Package reg;
-  reg.status = 4;            // STATUS_REGISTER
+  reg.status = TCP_STATUS_REGISTER;
   reg.msg_id = 0;
   reg.payload.assign(device_mac, device_mac + sizeof(device_mac));
   reg.size = reg.payload.size();
@@ -393,24 +390,18 @@ void receivePackage() {
   if (!recvAll(incoming.payload.data(), incoming.size))
     return;
 
-  // Annahme-ACK vom Server (status 2): ausstehende Sendung entfernen.
-  if (incoming.status == 2) {
+  // Annahme-ACK vom Server: ausstehende Sendung entfernen.
+  if (incoming.status == TCP_STATUS_ACK) {
     LOGI(TAG, "RECV acceptance ACK client_msg_id=%llu -> aus pending entfernt",
          (unsigned long long)incoming.msg_id);
     removePending(incoming.msg_id);
     return;
   }
 
-  // Keepalive-Antwort (status 0): ignorieren.
-  if (incoming.status == 0) {
-    LOGI(TAG, "RECV keepalive");
-    return;
-  }
-
-  // Nachricht (status 1) oder Check-Echo (status 3): abspielen + bestätigen.
-  if (incoming.status == 1 || incoming.status == 3) {
+  // Nachricht oder Test-Echo: abspielen + bestätigen.
+  if (incoming.status == TCP_STATUS_MESSAGE || incoming.status == TCP_STATUS_TEST) {
     LOGI(TAG, "RECV %s server_msg_id=%llu size=%u payload=%s",
-         incoming.status == 1 ? "msg" : "check",
+         incoming.status == TCP_STATUS_MESSAGE ? "msg" : "check",
          (unsigned long long)incoming.msg_id, (unsigned)incoming.size,
          packageToText(incoming).c_str());
     if (alreadyProcessed(incoming.msg_id)) {
@@ -451,7 +442,7 @@ void sendPackage() {
 
   // Neue, eindeutige client_msg_id vergeben (für Retry-Erkennung am Server).
   // Bei einem ACK die alte msg_id behalten (server_msg_id).
-  if (outgoing.status != 2)
+  if (outgoing.status != TCP_STATUS_ACK)
     outgoing.msg_id = newClientMsgId();
 
   if (!sendPackageBytes(outgoing)) {

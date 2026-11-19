@@ -24,7 +24,7 @@
 // esp_log_set_vprintf-Hook komplett.
 // =============================================================================
 
-#include "log.h"
+#include "log.h"       // logWrite-Deklaration
 
 #include <Arduino.h>  // Serial, millis()
 #include <stdarg.h>   // va_list, va_start, va_end

@@ -7,8 +7,8 @@
 // das eigentlich kopierbare std::vector-Objekt sicher zwischen Tasks geteilt.
 // =============================================================================
 
-#include "package.h"
-#include "log.h"
+#include "package.h"   // Package, Queue-Helfer
+#include "log.h"     // LOGW
 
 #include <cstddef>   // size_t
 

@@ -52,7 +52,7 @@ void setLedLow();
 //   print()            gibt eine Zeile (2 Punktreihen) aus
 // =============================================================================
 
-#include <cstdint>
+#include <cstdint>   // uint8_t (printerWriteByte)
 
 void printerInit();
 void makePrinterReady();

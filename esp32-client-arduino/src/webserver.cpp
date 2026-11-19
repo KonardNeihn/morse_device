@@ -12,22 +12,22 @@
 //   - esp_wifi/esp_netif         -> WiFi.softAP / WiFi.mode
 // =============================================================================
 
-#include "webserver.h"
+#include "webserver.h"   // eigene Prototypen
 #include "app.h"        // state, newWifiCredentials
 #include "config.h"     // AP_SSID, AP_CHANNEL
 #include "storage.h"    // saveWifiConfig, getSsid1/2, getPassword1/2
-#include "network.h"    // wifiIsConnected, wifiRssi
-#include "log.h"
+#include "network.h"    // wifiIsConnected, wifiRssi    // wifiIsConnected, wifiRssi
+#include "log.h"       // LOGI/LOGW
 
-#include <WiFi.h>
-#include <WebServer.h>
-#include <DNSServer.h>
+#include <WiFi.h>       // softAP, softAPIP, softAPdisconnect, mode, localIP
+#include <WebServer.h>  // WebServer (HTTP-Handler)
+#include <DNSServer.h>  // DNSServer (Captive-Portal-DNS)
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <freertos/FreeRTOS.h>  // xTaskCreate
+#include <freertos/task.h>    // vTaskDelay, eTaskGetState, vTaskDelete
 
-#include <cstdio>   // snprintf
-#include <string>
+#include <cstdio>       // snprintf   // snprintf
+#include <string>       // std::string (HTML-Seite)
 
 static const char* TAG = "webserver";
 
@@ -216,7 +216,20 @@ static void registerRoutes() {
   server.on("/", handleRoot);
   server.on("/status", handleStatus);
   server.on("/save", HTTP_POST, handleSave);
-  server.onNotFound(handleRoot);   // Captive Portal: alles -> Seite
+  //server.onNotFound(handleRoot);   // Captive Portal: alles -> Seite
+
+  server.on("/generate_204", handleRoot);     // Android/Google
+  server.on("/gen_204", handleRoot);          // manche Androids
+  server.on("/hotspot-detect.html", handleRoot); // Apple
+
+  server.onNotFound([]() {
+    // unbekannte Pfade -> zum Portal weiterleiten (löst bei Android/Samsung
+    // zuverlässiger die Anmelde-Aufforderung aus als direktes HTML)
+    String ap = WiFi.softAPIP().toString();
+    server.sendHeader("Location", "http://" + ap + "/", true);
+    server.send(302, "text/plain", "");
+  });
+
   done = true;
 }
 

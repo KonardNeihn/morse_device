@@ -1,7 +1,7 @@
-#include "app.h"
-#include "config.h"
-#include "package.h"
-#include "freertos/idf_additions.h"
+#include "app.h"                     // hier definierte Globals + Task-Prototypen
+#include "config.h"                  // QUEUE_SIZE (fuer xQueueCreate)
+#include "package.h"                // Package (Typ der Queue-Elemente)
+#include "freertos/idf_additions.h" // FreeRTOS-Erweiterungen (nur indirekt noetig)
 
 // Settings Flags (Kippschalter)
 volatile bool AUDIO_MODE = false;

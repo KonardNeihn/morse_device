@@ -12,15 +12,15 @@
 // Bei Fehlern springt er immer wieder einen Schritt zurück.
 // =============================================================================
 
-#include "app.h"
-#include "config.h"
-#include "network.h"
-#include "storage.h"
-#include "log.h"
-#include "webserver.h"
+#include "app.h"         // state, sendQueue, playbackQueue, Modus-Flags, newWifiCredentials
+#include "config.h"      // MAX_CONNECT_RETRIES, QUEUE_SIZE
+#include "network.h"     // connectWifi, connectTCP, tcpIsConnected, send/receive, configureWifiCredentials
+#include "storage.h"     // getSsid1/2, getPassword1/2, hasWifiConfig
+#include "log.h"         // LOGI/LOGW
+#include "webserver.h"   // webserverStart/Stop/IsActive
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <freertos/FreeRTOS.h>  // vTaskDelay, pdMS_TO_TICKS
+#include <freertos/task.h>  // vTaskDelay, xTaskCreate
 
 static const char *TAG = "connection";
 

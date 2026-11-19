@@ -1,12 +1,12 @@
-#include "app.h"
-#include "config.h"
-#include "hardware.h"
-#include "log.h"
-#include "package.h"
+#include "app.h"           // playbackQueue, printQueue, isRecording, isPlaying
+#include "config.h"        // SAMPLING_RATE_MS
+#include "hardware.h"     // playTone, stopTone, setLedHigh, setLedLow
+#include "log.h"          // LOGI/LOGW
+#include "package.h"      // Package, getPackageFromQueue, putPackageIntoQueue
 
-#include <Arduino.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <Arduino.h>  // Serial, millis, setup/loop (Arduino-Kern)
+#include <freertos/FreeRTOS.h>  // vTaskDelay, pdMS_TO_TICKS
+#include <freertos/task.h>  // vTaskDelay, xTaskCreate
 
 // =============================================================================
 // playback_task.cpp  –  "Output Task" (Priorität 1)
@@ -31,8 +31,10 @@ void PlaybackTask(void* pvParameters) {
       continue;
 
     // Kein Paket da? -> weiter warten.
-    if (uxQueueMessagesWaiting(playbackQueue) == 0)
+    if (uxQueueMessagesWaiting(playbackQueue) == 0) {
+      isPlaying = false;
       continue;
+    }
 
     // Paket auslesen.
     getPackageFromQueue(playbackQueue, package);
@@ -58,7 +60,6 @@ void PlaybackTask(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(SAMPLING_RATE_MS));  // Dauer pro Bit
       }
     }
-    isPlaying = false;  // Wiedergabe beendet (auch bei Abbruch)
 
     // Nach dem letzten Bit sicherstellen, dass Ton und LED aus sind.
     stopTone();

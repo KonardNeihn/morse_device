@@ -8,11 +8,11 @@
 // sauber ausgeht.
 // =============================================================================
 
-#include "app.h"
-#include "freertos/projdefs.h"
-#include "hardware.h"
-#include "log.h"
-#include "network.h"
+#include "app.h"           // state, isRecording, isPlaying
+#include "freertos/projdefs.h" // pdMS_TO_TICKS (kommt auch ueber task.h)
+#include "hardware.h"     // checkPins, testMosfet, showStatus
+#include "log.h"          // LOGI/LOGW
+#include "network.h"      // wifiRssi
 
 #include <freertos/task.h>          // vTaskDelay, pdMS_TO_TICKS
 

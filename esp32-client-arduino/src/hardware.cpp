@@ -8,15 +8,14 @@
 //                MOSFET-Selbsttest
 // =============================================================================
 
-#include "hardware.h"
-#include "HardwareSerial.h"
-#include "app.h"
-#include "config.h"
-#include "esp32-hal-gpio.h"
-#include "log.h"
+#include "hardware.h"      // eigene Prototypen + Drucker-Deklarationen
+#include "HardwareSerial.h" // Serial1 (Drucker-UART)
+#include "app.h"          // AUDIO_MODE, PRINTER_MODE, HOTSPOT_MODE, TEST_MODE, isPlaying, isRecording
+#include "config.h"       // alle __PIN-Nummern, SOUND_FREQ, PRINT_*
+#include "esp32-hal-gpio.h"// digitalRead/digitalWrite/pinMode (GPIO-Abstraktion)
+#include "log.h"          // LOGI/LOGV
 
 #include <Arduino.h>             // tone(), noTone(), pinMode(), digitalWrite(), ...
-#include <atomic>
 #include <freertos/task.h>       // vTaskDelay, pdMS_TO_TICKS
 
 static const char* TAG = "hardware";
